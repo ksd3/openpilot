@@ -99,6 +99,7 @@ _services: dict[str, tuple] = {
   "livestreamWideRoadEncodeData": (False, 20., None, QueueSize.MEDIUM),
   "livestreamRoadEncodeData": (False, 20., None, QueueSize.MEDIUM),
   "livestreamDriverEncodeData": (False, 20., None, QueueSize.MEDIUM),
+  "bodyTuningTelemetry": (True, 20.),
   "customReservedRawData0": (True, 0.),
   "customReservedRawData1": (True, 0.),
   "customReservedRawData2": (True, 0.),

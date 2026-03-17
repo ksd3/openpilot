@@ -11,6 +11,13 @@ $Cxx.namespace("cereal");
 # DON'T change the identifier (e.g. @0x81c2f05a394cf4af)
 
 struct CustomReserved0 @0x81c2f05a394cf4af {
+  speedDesired @0 :Float32;
+  speedMeasured @1 :Float32;
+  speedError @2 :Float32;
+  speedDiffDesired @3 :Float32;
+  speedDiffMeasured @4 :Float32;
+  torqueL @5 :Float32;
+  torqueR @6 :Float32;
 }
 
 struct CustomReserved1 @0xaedffd8f31e7b55d {

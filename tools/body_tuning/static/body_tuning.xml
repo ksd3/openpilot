@@ -1,0 +1,44 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<root version="2.3.8">
+ <tabbed_widget parent="main_window" name="Main Window">
+  <Tab tab_name="Body PID Tuning" containers="1">
+   <Container>
+    <DockSplitter orientation="-" count="3" sizes="0.333;0.333;0.334">
+     <DockArea name="Speed Tracking">
+      <plot style="Lines" mode="TimeSeries">
+       <range left="0" top="1" bottom="-1" right="100"/>
+       <limitY/>
+       <curve color="#0072b2" name="/bodyTuningTelemetry/speedDesired"/>
+       <curve color="#009e73" name="/bodyTuningTelemetry/speedMeasured"/>
+      </plot>
+     </DockArea>
+     <DockArea name="Speed Error">
+      <plot style="Lines" mode="TimeSeries">
+       <range left="0" top="0.5" bottom="-0.5" right="100"/>
+       <limitY/>
+       <curve color="#dc267f" name="/bodyTuningTelemetry/speedError"/>
+      </plot>
+     </DockArea>
+     <DockArea name="Torque Output">
+      <plot style="Lines" mode="TimeSeries">
+       <range left="0" top="700" bottom="-700" right="100"/>
+       <limitY/>
+       <curve color="#ffb000" name="/bodyTuningTelemetry/torqueL"/>
+       <curve color="#785ef0" name="/bodyTuningTelemetry/torqueR"/>
+      </plot>
+     </DockArea>
+    </DockSplitter>
+   </Container>
+  </Tab>
+  <currentTabIndex index="0"/>
+ </tabbed_widget>
+ <use_relative_time_offset enabled="1"/>
+ <!-- - - - - - - - - - - - - - - -->
+ <Plugins>
+  <plugin ID="Cereal Subscriber"/>
+ </Plugins>
+ <!-- - - - - - - - - - - - - - - -->
+ <customMathEquations/>
+ <snippets/>
+ <!-- - - - - - - - - - - - - - - -->
+</root>
