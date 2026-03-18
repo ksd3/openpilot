@@ -12,22 +12,18 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Start telemetry bridge
+# Start telemetry bridge + param receiver (runs on device)
 python3 "$DIR/body_telemd.py" &
 PIDS+=($!)
 echo "Started body_telemd.py (PID $!)"
 
-# Start tuning GUI
-python3 "$DIR/tune_gui.py" &
-PIDS+=($!)
-echo "Started tune_gui.py (PID $!)"
-
-# Optionally start PlotJuggler with body tuning layout
-if [ "$1" = "--plot" ]; then
-  python3 "$DIR/../plotjuggler/juggle.py" --stream --layout "$DIR/static/body_tuning.xml" &
-  PIDS+=($!)
-  echo "Started PlotJuggler (PID $!)"
-fi
-
-echo "Body tuning tools running. Press Ctrl+C to stop."
+DEVICE_IP=$(hostname -I | awk '{print $1}')
+echo ""
+echo "Body tuning daemon running. Press Ctrl+C to stop."
+echo ""
+echo "On your PC, run:"
+echo "  python tune_gui.py $DEVICE_IP"
+echo "  ZMQ=1 ./tools/plotjuggler/juggle.py --stream --layout tools/body_tuning/static/body_tuning.xml"
+echo ""
+echo "In PlotJuggler, select Cereal Subscriber and enter device IP: $DEVICE_IP"
 wait

@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 """
-Tkinter GUI for live-tuning body PID gains via openpilot Params.
+Tkinter GUI for live-tuning body PID gains (runs on remote computer).
+Sends param updates over ZMQ to body_telemd.py on the device.
+
+Usage: python tune_gui.py <device_ip>
 """
+import argparse
+import json
 import tkinter as tk
 
-from openpilot.common.params import Params
+import zmq
+
+PARAM_SEND_PORT = 8290
 
 GAINS = {
   'BodySpeedPidKp': {'label': 'Speed Kp', 'default': 110.0, 'max': 330.0, 'resolution': 0.5},
@@ -15,27 +22,28 @@ GAINS = {
 
 
 class TuningGUI:
-  def __init__(self):
-    self.params = Params()
+  def __init__(self, device_ip: str):
+    self.ctx = zmq.Context()
+    self.sock = self.ctx.socket(zmq.PUSH)
+    self.sock.connect(f"tcp://{device_ip}:{PARAM_SEND_PORT}")
+
     self.root = tk.Tk()
-    self.root.title("Body PID Tuning")
+    self.root.title(f"Body PID Tuning — {device_ip}")
     self.sliders: dict[str, tk.Scale] = {}
     self.labels: dict[str, tk.Label] = {}
     self._write_pending = False
 
     for i, (key, cfg) in enumerate(GAINS.items()):
-      initial = self._read_param(key, cfg['default'])
-
       tk.Label(self.root, text=cfg['label'], font=('monospace', 12), width=12, anchor='w').grid(row=i, column=0, padx=(10, 5), pady=5)
 
       s = tk.Scale(self.root, from_=0, to=cfg['max'], resolution=cfg['resolution'],
                    orient=tk.HORIZONTAL, length=400, showvalue=False,
                    command=lambda v, k=key: self._on_change(k, float(v)))
-      s.set(initial)
+      s.set(cfg['default'])
       s.grid(row=i, column=1, padx=5, pady=5)
       self.sliders[key] = s
 
-      lbl = tk.Label(self.root, text=f"{initial:.1f}", font=('monospace', 12), width=8)
+      lbl = tk.Label(self.root, text=f"{cfg['default']:.1f}", font=('monospace', 12), width=8)
       lbl.grid(row=i, column=2, padx=(5, 10), pady=5)
       self.labels[key] = lbl
 
@@ -46,15 +54,6 @@ class TuningGUI:
     self._flush_params()
     self.root.mainloop()
 
-  def _read_param(self, key: str, default: float) -> float:
-    try:
-      val = self.params.get(key, return_default=True)
-      if val is not None:
-        return float(val)
-    except Exception:
-      pass
-    return default
-
   def _on_change(self, key: str, value: float):
     self.labels[key].config(text=f"{value:.1f}")
     if not self._write_pending:
@@ -63,9 +62,8 @@ class TuningGUI:
 
   def _flush_params(self):
     self._write_pending = False
-    for key in GAINS:
-      val = self.sliders[key].get()
-      self.params.put_nonblocking(key, str(val))
+    data = {key: self.sliders[key].get() for key in GAINS}
+    self.sock.send_string(json.dumps(data))
 
   def _reset(self):
     for key, cfg in GAINS.items():
@@ -75,4 +73,7 @@ class TuningGUI:
 
 
 if __name__ == '__main__':
-  TuningGUI()
+  parser = argparse.ArgumentParser(description='Body PID tuning GUI')
+  parser.add_argument('device_ip', help='IP address of the device running body_telemd.py')
+  args = parser.parse_args()
+  TuningGUI(args.device_ip)
