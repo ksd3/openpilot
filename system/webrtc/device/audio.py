@@ -18,6 +18,13 @@ AUDIO_PTIME = 0.020
 MIC_SAMPLE_RATE = 16000
 SPEAKER_SAMPLE_RATE = 48000
 SPEAKER_FRAME_SIZE = int(SPEAKER_SAMPLE_RATE * AUDIO_PTIME)
+BODY_SOUND_FILES = {
+  "engage": "engage.wav",
+  "disengage": "disengage.wav",
+  "prompt": "prompt.wav",
+  "warning": "warning_immediate.wav",
+}
+BODY_SOUND_NAMES = frozenset(BODY_SOUND_FILES)
 
 
 class PcmBuffer:
@@ -56,10 +63,10 @@ class PcmBuffer:
     return out
 
 
-def load_body_sound_clips(sound_files: dict[str, str]) -> dict[str, np.ndarray]:
+def load_body_sound_clips() -> dict[str, np.ndarray]:
   loaded: dict[str, np.ndarray] = {}
   sounds_dir = Path(BASEDIR) / "selfdrive" / "assets" / "sounds"
-  for sound_name, filename in sound_files.items():
+  for sound_name, filename in BODY_SOUND_FILES.items():
     with wave.open(str(sounds_dir / filename), "rb") as sound_file:
       assert sound_file.getnchannels() == 1
       assert sound_file.getsampwidth() == 2
@@ -101,7 +108,6 @@ class BodyMicAudioTrack(AudioStreamTrack):
     self._stream = self._sd.InputStream(
       channels=1,
       samplerate=self._sample_rate,
-      blocksize=self._samples_per_frame,
       callback=self._callback,
     )
     self._stream.start()
@@ -159,7 +165,7 @@ class BodyMicAudioTrack(AudioStreamTrack):
 
 
 class BodySpeaker:
-  def __init__(self, sound_files: dict[str, str]):
+  def __init__(self):
     import sounddevice as sd
 
     self.logger = logging.getLogger("webrtcd")
@@ -169,7 +175,8 @@ class BodySpeaker:
     self._sound_buffer = PcmBuffer()
     self._track_task: asyncio.Task | None = None
     self._stream = None
-    self._loaded_sounds = load_body_sound_clips(sound_files)
+    self._disabled = False
+    self._loaded_sounds = load_body_sound_clips()
     self._resampler = AudioResampler(
       format="s16",
       layout="mono",
@@ -178,16 +185,24 @@ class BodySpeaker:
     )
 
   def _ensure_stream_started(self):
+    if self._disabled:
+      return False
     if self._stream is not None:
-      return
+      return True
 
-    self._stream = self._sd.OutputStream(
-      channels=1,
-      samplerate=SPEAKER_SAMPLE_RATE,
-      blocksize=SPEAKER_FRAME_SIZE,
-      callback=self._callback,
-    )
-    self._stream.start()
+    try:
+      self._stream = self._sd.OutputStream(
+        channels=1,
+        samplerate=SPEAKER_SAMPLE_RATE,
+        callback=self._callback,
+      )
+      self._stream.start()
+      return True
+    except Exception:
+      self.logger.exception("Failed to open body speaker output stream")
+      self._disabled = True
+      self._stream = None
+      return False
 
   def _callback(self, outdata, frames, _time_info, status):
     if status:
@@ -202,13 +217,15 @@ class BodySpeaker:
     outdata[:, 0] = mixed.astype(np.float32) / 32768.0
 
   def play_sound(self, sound_name: str):
-    self._ensure_stream_started()
+    if not self._ensure_stream_started():
+      return
     with self._lock:
       self._sound_buffer.push(self._loaded_sounds[sound_name].copy())
 
   def start_track(self, track):
     assert self._track_task is None
-    self._ensure_stream_started()
+    if not self._ensure_stream_started():
+      return
     self._track_task = asyncio.create_task(self._run_track(track))
 
   async def _run_track(self, track):

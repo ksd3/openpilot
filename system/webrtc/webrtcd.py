@@ -121,12 +121,12 @@ class DynamicPubMaster(messaging.PubMaster):
           self.sock[service] = messaging.pub_sock(service)
 
 
-BODY_SOUND_FILES = {
-  "engage": "engage.wav",
-  "disengage": "disengage.wav",
-  "prompt": "prompt.wav",
-  "warning": "warning_immediate.wav",
-}
+def validate_body_sound_name(sound_name: Any) -> str:
+  from openpilot.system.webrtc.device.audio import BODY_SOUND_NAMES
+
+  if sound_name not in BODY_SOUND_NAMES:
+    raise ValueError(f"unsupported body sound: {sound_name}")
+  return sound_name
 
 
 def parse_body_sound_request(message: bytes | str) -> str | None:
@@ -144,17 +144,14 @@ def parse_body_sound_request(message: bytes | str) -> str | None:
   if not isinstance(data, dict):
     raise ValueError("bodySound messages must include an object data field")
 
-  sound_name = data.get("sound")
-  if sound_name not in BODY_SOUND_FILES:
-    raise ValueError(f"unsupported body sound: {sound_name}")
-
-  return sound_name
+  return validate_body_sound_name(data.get("sound"))
 
 
 class StreamSession:
   shared_pub_master = DynamicPubMaster([])
 
-  def __init__(self, sdp: str, cameras: list[str], incoming_services: list[str], outgoing_services: list[str], debug_mode: bool = False):
+  def __init__(self, sdp: str, cameras: list[str], incoming_services: list[str], outgoing_services: list[str],
+               audio_output=None, debug_mode: bool = False):
     from aiortc.mediastreams import AudioStreamTrack, VideoStreamTrack
     from openpilot.system.webrtc.device.audio import BodyMicAudioTrack, BodySpeaker
     from openpilot.system.webrtc.device.video import LiveStreamVideoStreamTrack
@@ -180,10 +177,10 @@ class StreamSession:
       except Exception:
         self.logger.exception("Failed to initialize body microphone track")
 
-    self.audio_output: BodySpeaker | None = None
-    if config.incoming_audio_track or config.incoming_datachannel:
+    self.audio_output: BodySpeaker | None = audio_output if (config.incoming_audio_track or config.incoming_datachannel) else None
+    if self.audio_output is None and (config.incoming_audio_track or config.incoming_datachannel):
       try:
-        self.audio_output = BodySpeaker(BODY_SOUND_FILES)
+        self.audio_output = BodySpeaker()
       except Exception:
         self.logger.exception("Failed to initialize body speaker output")
     if config.incoming_audio_track:
@@ -285,6 +282,11 @@ class StreamRequestBody:
   bridge_services_in: list[str] = field(default_factory=list)
   bridge_services_out: list[str] = field(default_factory=list)
 
+
+@dataclass
+class SoundRequestBody:
+  sound: str
+
 def _add_cors_headers(request: 'web.Request', response: 'web.Response'):
   response.headers["Access-Control-Allow-Origin"] = "*"
   response.headers["Access-Control-Allow-Headers"] = "Content-Type"
@@ -354,7 +356,8 @@ async def get_stream(request: 'web.Request'):
     body = StreamRequestBody(**raw_body)
     _validate_sdp_video_codecs(body.sdp)
 
-    session = StreamSession(body.sdp, body.cameras, body.bridge_services_in, body.bridge_services_out, debug_mode)
+    session = StreamSession(body.sdp, body.cameras, body.bridge_services_in, body.bridge_services_out,
+                            request.app['body_audio_output'], debug_mode)
     answer = await session.get_answer()
     session.start()
     Params().put_bool("JoystickDebugMode", True)
@@ -369,6 +372,30 @@ async def get_stream(request: 'web.Request'):
   except Exception:
     logger.exception("Error in /stream handler")
     raise
+
+
+async def post_sound(request: 'web.Request'):
+  try:
+    raw_body = await request.json()
+    body = SoundRequestBody(**raw_body)
+    sound_name = validate_body_sound_name(body.sound)
+  except web.HTTPException:
+    raise
+  except (TypeError, ValueError, json.JSONDecodeError) as err:
+    raise web.HTTPBadRequest(
+      text=json.dumps({"error": "invalid_sound", "message": str(err)}),
+      content_type="application/json",
+    ) from err
+
+  audio_output = request.app['body_audio_output']
+  if audio_output is None:
+    raise web.HTTPServiceUnavailable(
+      text=json.dumps({"error": "audio_unavailable", "message": "Body audio output is unavailable"}),
+      content_type="application/json",
+    )
+
+  audio_output.play_sound(sound_name)
+  return web.Response(status=200, text="OK")
 
 
 async def get_schema(request: 'web.Request'):
@@ -422,6 +449,8 @@ async def post_notify(request: 'web.Request'):
 async def on_shutdown(app: 'web.Application'):
   for session in app['streams'].values():
     session.stop()
+  if app.get('body_audio_output') is not None:
+    await app['body_audio_output'].stop()
   del app['streams']
 
 
@@ -456,6 +485,8 @@ def create_ssl_context():
 
 
 def webrtcd_thread(host: str, port: int, debug: bool):
+  from openpilot.system.webrtc.device.audio import BodySpeaker
+
   logging.basicConfig(level=logging.CRITICAL, handlers=[logging.StreamHandler()])
   logging_level = logging.DEBUG if debug else logging.INFO
   logging.getLogger("WebRTCStream").setLevel(logging_level)
@@ -466,9 +497,16 @@ def webrtcd_thread(host: str, port: int, debug: bool):
   app = web.Application(middlewares=[cors_middleware])
   app['streams'] = dict()
   app['debug'] = debug
+  try:
+    app['body_audio_output'] = BodySpeaker()
+  except Exception:
+    logger.exception("Failed to initialize shared body audio output")
+    app['body_audio_output'] = None
   app.on_shutdown.append(on_shutdown)
   app.router.add_route("OPTIONS", "/stream", stream_options)
+  app.router.add_route("OPTIONS", "/sound", stream_options)
   app.router.add_post("/stream", get_stream)
+  app.router.add_post("/sound", post_sound)
   app.router.add_post("/notify", post_notify)
   app.router.add_get("/schema", get_schema)
   app.router.add_get("/trust", get_trust)
