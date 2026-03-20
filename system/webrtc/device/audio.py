@@ -13,6 +13,7 @@ from cereal import car, messaging
 
 AUDIO_PTIME = 0.020
 MIC_SAMPLE_RATE = 16000
+SPEAKER_SAMPLE_RATE = 48000
 
 AudibleAlert = car.CarControl.HUDControl.AudibleAlert
 BODY_SOUND_ALERTS = {
@@ -63,37 +64,33 @@ class PcmBuffer:
 
 class BodyMicAudioTrack(AudioStreamTrack):
   def __init__(self):
-    import sounddevice as sd
-
     super().__init__()
-    self.logger = logging.getLogger("webrtcd")
     self._loop = asyncio.get_running_loop()
     self._buffer = PcmBuffer()
     self._buffer_event = asyncio.Event()
     self._sample_rate = MIC_SAMPLE_RATE
     self._samples_per_frame = int(self._sample_rate * AUDIO_PTIME)
     self._lock = threading.Lock()
-    self._sd = sd
-    self._stream = self._sd.InputStream(
-      channels=1,
-      samplerate=self._sample_rate,
-      callback=self._callback,
-    )
-    self._stream.start()
+    self._running = True
+    self._thread = threading.Thread(target=self._poll_cereal, daemon=True)
+    self._thread.start()
 
-  def _callback(self, indata, frames, _time_info, status):
-    if status:
-      self.logger.warning("Mic input stream status: %s", status)
+  def _poll_cereal(self):
+    sm = messaging.SubMaster(['rawAudioData'])
+    while self._running:
+      sm.update(20)
+      if sm.updated['rawAudioData']:
+        raw_bytes = sm['rawAudioData'].data
+        if len(raw_bytes) > 0:
+          # .copy() required: frombuffer is a view over the cereal message buffer, invalidated by next sm.update()
+          pcm_int16 = np.frombuffer(raw_bytes, dtype=np.int16).copy()
 
-    pcm_samples = np.clip(indata[:, 0], -1.0, 1.0)
-    pcm_int16 = (pcm_samples * 32767).astype(np.int16)
+          def _push(samples=pcm_int16):
+            with self._lock:
+              self._buffer.push(samples)
+            self._buffer_event.set()
 
-    def _push():
-      with self._lock:
-        self._buffer.push(pcm_int16)
-      self._buffer_event.set()
-
-    self._loop.call_soon_threadsafe(_push)
+          self._loop.call_soon_threadsafe(_push)
 
   async def recv(self):
     if self.readyState != "live":
@@ -126,16 +123,14 @@ class BodyMicAudioTrack(AudioStreamTrack):
 
   def stop(self):
     super().stop()
+    self._running = False
     self._buffer_event.set()
-    if self._stream is not None:
-      self._stream.stop()
-      self._stream.close()
-      self._stream = None
 
 
 class BodySpeaker:
   def __init__(self):
-    self._pm = messaging.PubMaster(['soundRequest'])
+    self._pm = messaging.PubMaster(['soundRequest', 'webrtcAudioData'])
+    self._task: asyncio.Task | None = None
 
   def play_sound(self, sound_name: str):
     msg = messaging.new_message('soundRequest')
@@ -143,7 +138,33 @@ class BodySpeaker:
     self._pm.send('soundRequest', msg)
 
   def start_track(self, track):
-    pass
+    self._task = asyncio.ensure_future(self._consume_track(track))
+
+  async def _consume_track(self, track):
+    from av import AudioResampler
+
+    logger = logging.getLogger("webrtcd")
+    resampler = AudioResampler(format='s16', layout='mono', rate=SPEAKER_SAMPLE_RATE)
+    try:
+      while True:
+        frame = await track.recv()
+        for resampled in resampler.resample(frame):
+          msg = messaging.new_message('webrtcAudioData')
+          msg.webrtcAudioData.data = resampled.planes[0].to_bytes()
+          msg.webrtcAudioData.sampleRate = SPEAKER_SAMPLE_RATE
+          self._pm.send('webrtcAudioData', msg)
+    except MediaStreamError:
+      logger.info("Incoming browser audio track ended")
+    except asyncio.CancelledError:
+      raise
+    except Exception:
+      logger.exception("BodySpeaker track consumption error")
 
   async def stop(self):
-    pass
+    if self._task is not None and not self._task.done():
+      self._task.cancel()
+      try:
+        await self._task
+      except asyncio.CancelledError:
+        pass
+    self._task = None

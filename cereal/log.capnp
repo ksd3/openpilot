@@ -2614,6 +2614,7 @@ struct Event {
     bookmarkButton @148 :UserBookmark;
     audioFeedback @149 :AudioFeedback;
     soundRequest @150 :SoundRequest;
+    webrtcAudioData @151 :AudioData;
 
     # *********** debug ***********
     testJoystick @52 :Joystick;
