@@ -55,6 +55,7 @@ class LiveStreamVideoStreamTrack(TiciVideoStreamTrack):
     self._sock = messaging.sub_sock(self.camera_to_sock_mapping[camera_type], conflate=True)
     self._pts = 0
     self._t0_ns = time.monotonic_ns()
+    self.timing_sei_enabled = False
 
   def switch_camera(self, camera_type: str):
     if camera_type not in self.camera_to_sock_mapping or camera_type == self._camera_type:
@@ -71,15 +72,16 @@ class LiveStreamVideoStreamTrack(TiciVideoStreamTrack):
 
     evta = getattr(msg, msg.which())
 
-    # Compute per-stage latencies (milliseconds)
-    capture_ms = (evta.idx.timestampEof - evta.idx.timestampSof) / 1e6
-    encode_ms = (msg.logMonoTime - evta.idx.timestampEof) / 1e6
-    send_delay_ms = (time.monotonic_ns() - msg.logMonoTime) / 1e6
-    send_wall_ms = time.time() * 1000
+    frame_data = evta.header + evta.data
+    if self.timing_sei_enabled:
+      capture_ms = (evta.idx.timestampEof - evta.idx.timestampSof) / 1e6
+      encode_ms = (msg.logMonoTime - evta.idx.timestampEof) / 1e6
+      send_delay_ms = (time.monotonic_ns() - msg.logMonoTime) / 1e6
+      send_wall_ms = time.time() * 1000
+      sei_nal = create_timing_sei(capture_ms, encode_ms, send_delay_ms, send_wall_ms)
+      frame_data = evta.header + sei_nal + evta.data
 
-    sei_nal = create_timing_sei(capture_ms, encode_ms, send_delay_ms, send_wall_ms)
-
-    packet = av.Packet(evta.header + sei_nal + evta.data)
+    packet = av.Packet(frame_data)
     packet.time_base = self._time_base
 
     self._pts = ((time.monotonic_ns() - self._t0_ns) * self._clock_rate) // 1_000_000_000

@@ -269,6 +269,12 @@ class StreamSession:
       if isinstance(payload, dict) and payload.get("type") == "clockSync":
         self._handle_clock_sync(payload)
         return
+      if isinstance(payload, dict) and payload.get("type") == "enableTimingSei":
+        enabled = bool(payload.get("data", {}).get("enabled"))
+        if hasattr(self.video_track, 'timing_sei_enabled'):
+          self.video_track.timing_sei_enabled = enabled
+          self.logger.info("Timing SEI %s", "enabled" if enabled else "disabled")
+        return
       sound_name = parse_body_sound_request(message)
       if sound_name is not None:
         if self.audio_output is not None:
