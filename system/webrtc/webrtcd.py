@@ -314,9 +314,9 @@ class StreamSession:
         self.audio_output.start_track(self.stream.get_incoming_audio_track())
       if self.stream.has_messaging_channel():
         self._messaging_channel = self.stream.get_messaging_channel()
-        if self.incoming_bridge is not None or self.audio_output is not None:
+        if self.incoming_bridge is not None:
           await self.shared_pub_master.add_services_if_needed(self.incoming_bridge_services)
-          self.stream.set_message_handler(self.message_handler)
+        self.stream.set_message_handler(self.message_handler)
         if self.outgoing_bridge_runner is not None:
           self.outgoing_bridge_runner.proxy.add_channel(self._messaging_channel)
           self.outgoing_bridge_runner.start()
