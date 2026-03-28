@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""SCP-173 Comma Body — main control loop."""
+"""SCP-173 Comma Body — main control loop.
 
-import json
+Uses BlazeFace (~24ms, 40fps) for combined person + attention detection.
+Face visible = someone is watching = FREEZE.
+Face disappears = they looked away = MOVE toward last known position.
+"""
+
 import logging
-import socket
-import struct
 import threading
 import time
 import numpy as np
 import cv2
 
-# Log to file so we can review after a run
 logging.basicConfig(
     filename="/data/openpilot/scp173/scp173.log",
     level=logging.INFO,
@@ -20,27 +21,22 @@ logging.basicConfig(
 log = logging.getLogger("scp173")
 
 from msgq.visionipc import VisionIpcClient, VisionStreamType
-
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.params import Params
 
-from scp173.config import (
-    CONTROL_HZ, STREAM_HOST, STREAM_PORT,
-)
-from scp173.perception.person_detector_mobilenet import PersonDetector
-from scp173.perception.attention_detector_fast import AttentionDetector
-from scp173.behavior.state_machine        import SCP173StateMachine, State
-from scp173.control.motor_controller      import MotorController
+from scp173.perception.detector_blazeface import BlazeFaceDetector
+from scp173.behavior.state_machine import SCP173StateMachine, State
+from scp173.control.motor_controller import MotorController
+
+BLAZE_MODEL = "/data/openpilot/scp173/models/blaze_face_short_range.tflite"
 
 
-# ── Camera helpers ────────────────────────────────────────────────────────────
-
-def yuv_to_bgr(buf) -> np.ndarray:
+def yuv_to_rgb(buf) -> np.ndarray:
     h, w, stride = buf.height, buf.width, buf.stride
     nv12_size = h * 3 // 2 * stride
     raw = np.frombuffer(buf.data, dtype=np.uint8, count=nv12_size)
     nv12 = raw.reshape((h * 3 // 2, stride))
-    return cv2.cvtColor(np.ascontiguousarray(nv12[:, :w]), cv2.COLOR_YUV2BGR_NV12)
+    return cv2.cvtColor(np.ascontiguousarray(nv12[:, :w]), cv2.COLOR_YUV2RGB_NV12)
 
 
 def connect_camera(stream_type: VisionStreamType) -> VisionIpcClient:
@@ -50,44 +46,30 @@ def connect_camera(stream_type: VisionStreamType) -> VisionIpcClient:
     return client
 
 
-def best_detection(people: list, frame_w: int, frame_h: int) -> tuple | None:
-    if not people:
-        return None
-    best = max(people, key=lambda p: (p[2] - p[0]) * (p[3] - p[1]))
-    x1, y1, x2, y2, _ = best
-    cx = (x1 + x2) / 2.0
-    cy = (y1 + y2) / 2.0
-    return (cx / frame_w) * 2.0 - 1.0, cx, cy
-
-
-# ── Fast command publisher ────────────────────────────────────────────────────
-
 class CommandPublisher:
-    """Publishes the latest motor command at 20 Hz so joystickd stays alive."""
-
     PUBLISH_HZ = 20
 
     def __init__(self, motor: MotorController):
-        self._motor   = motor
-        self._accel   = 0.0
-        self._steer   = 0.0
-        self._lock    = threading.Lock()
+        self._motor = motor
+        self._accel = 0.0
+        self._steer = 0.0
+        self._lock = threading.Lock()
         self._running = True
-        self._thread  = threading.Thread(target=self._loop, daemon=True)
+        self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
 
-    def update(self, accel: float, steer: float) -> None:
+    def update(self, accel: float, steer: float):
         with self._lock:
             self._accel = accel
             self._steer = steer
 
-    def stop(self) -> None:
+    def stop(self):
         with self._lock:
             self._accel = 0.0
             self._steer = 0.0
         self._running = False
 
-    def _loop(self) -> None:
+    def _loop(self):
         rk = Ratekeeper(self.PUBLISH_HZ, print_delay_threshold=None)
         while self._running:
             with self._lock:
@@ -96,159 +78,115 @@ class CommandPublisher:
             rk.keep_time()
 
 
-# ── Debug frame streamer ──────────────────────────────────────────────────────
-
-class FrameStreamer:
-    """Sends JPEG frames + metadata to the viewer on the host machine via UDP."""
-
-    def __init__(self, host: str, port: int):
-        self._host = host
-        self._port = port
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._enabled = bool(host)
-
-    def send(self, frame: np.ndarray, meta: dict) -> None:
-        if not self._enabled:
-            return
-        try:
-            small = cv2.resize(frame, (640, 480))
-            _, jpeg = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 60])
-            meta_bytes = json.dumps(meta).encode()
-            jpeg_bytes = jpeg.tobytes()
-            header = struct.pack(">II", 8 + len(meta_bytes) + len(jpeg_bytes), len(meta_bytes))
-            packet = header + meta_bytes + jpeg_bytes
-            if len(packet) <= 65507:
-                self._sock.sendto(packet, (self._host, self._port))
-        except Exception:
-            pass
-
-
-# ── Main ──────────────────────────────────────────────────────────────────────
-
 def main():
     params = Params()
     params.put_bool("JoystickDebugMode", True)
 
-    print("SCP-173 online. Waiting for joystickd to start...")
-    for _ in range(30):
-        if params.get_bool("JoystickDebugMode"):
-            break
-        params.put_bool("JoystickDebugMode", True)
-        time.sleep(1)
-
-    # Keep re-setting it in case manager clears it
+    # Keep JoystickDebugMode alive
     def keep_joystick_mode():
         while True:
             params.put_bool("JoystickDebugMode", True)
             time.sleep(2)
     threading.Thread(target=keep_joystick_mode, daemon=True).start()
 
-    print("JoystickDebugMode set. Initialising subsystems...")
-
-    detector  = PersonDetector(input_size=200)  # smaller = faster
-    attention = AttentionDetector()
-    motor     = MotorController()
+    print("SCP-173 online. Loading BlazeFace...")
+    detector = BlazeFaceDetector(BLAZE_MODEL, confidence=0.5)
+    motor = MotorController()
     publisher = CommandPublisher(motor)
-    streamer  = FrameStreamer(STREAM_HOST, STREAM_PORT)
-    fsm       = SCP173StateMachine()
+    fsm = SCP173StateMachine()
 
     print("Connecting to road camera...")
     road_cam = connect_camera(VisionStreamType.VISION_STREAM_ROAD)
     print("Camera connected. Beginning containment breach...")
 
-    tick           = 0
-    being_watched  = False
+    # Smoothing
     smooth_bearing = 0.0
-    smooth_accel   = 0.0
-    BEARING_ALPHA  = 0.15  # heavy smoothing — takes ~5 consistent frames to fully turn
-    ACCEL_ALPHA    = 0.2
-    MAX_ACCEL      = 0.2
-    MAX_STEER_CMD  = 0.25
-    MAX_STEER_RATE = 0.1   # max steer change per frame
-    fps            = 0.0
+    smooth_accel = 0.0
+    BEARING_ALPHA = 0.3
+    ACCEL_ALPHA = 0.3
+    MAX_ACCEL = 0.2
+    MAX_STEER_CMD = 0.3
+    STEER_RATE_LIMIT = 0.15
+
+    # Last known bearing for when face disappears
+    last_known_bearing = 0.0
+    frames_since_face = 0
+
+    fps = 0.0
+    tick = 0
 
     try:
         while True:
-            loop_start = time.monotonic()
+            t0 = time.monotonic()
 
-            # ── Frame ────────────────────────────────────────────────
-            road_buf = road_cam.recv()
-            if road_buf is None:
+            buf = road_cam.recv()
+            if buf is None:
                 publisher.update(0.0, 0.0)
                 continue
 
-            road_frame = yuv_to_bgr(road_buf)
-            h, w = road_frame.shape[:2]
+            frame_rgb = yuv_to_rgb(buf)
+            h, w = frame_rgb.shape[:2]
 
-            # ── Detection ────────────────────────────────────────────
-            road_people = detector.detect(road_frame)
-            person_detected = len(road_people) > 0
+            # BlazeFace detection (~24ms)
+            faces, being_watched, bearing = detector.detect(frame_rgb)
 
-            target_bearing  = 0.0
-            target_distance = 1.0
+            if bearing is not None:
+                last_known_bearing = bearing
+                frames_since_face = 0
+            else:
+                frames_since_face += 1
 
-            if person_detected:
-                det = best_detection(road_people, w, h)
-                if det:
-                    bearing, cx, cy = det
-                    target_bearing = bearing
-                    best_person = max(road_people, key=lambda p: (p[2] - p[0]) * (p[3] - p[1]))
-                    bbox_w = (best_person[2] - best_person[0]) / w
-                    target_distance = max(0.01, 1.0 - bbox_w)
+            # Person detected = face seen recently (within last 10 frames)
+            person_detected = frames_since_face < 10
 
-            # ── Attention ────────────────────────────────────────────
-            being_watched, _ = attention.is_being_watched(road_frame)
+            # Distance proxy from face size
+            if faces:
+                largest = max(faces, key=lambda f: (f[2] - f[0]) * (f[3] - f[1]))
+                face_w = (largest[2] - largest[0]) / w
+                target_distance = max(0.01, 1.0 - face_w * 3)  # faces are smaller than bodies
+            else:
+                target_distance = 0.8
 
-            # ── State machine ────────────────────────────────────────
+            # Use last known bearing when face disappears (they turned away)
+            target_bearing = last_known_bearing if person_detected else 0.0
+
+            # State machine
             raw_accel, raw_steer = fsm.update(
                 person_detected, being_watched, target_bearing, target_distance
             )
 
-            # ── Smoothing + rate limiting ────────────────────────────
+            # Smoothing + rate limiting
             if raw_accel > 0:
                 new_bearing = smooth_bearing * (1 - BEARING_ALPHA) + raw_steer * BEARING_ALPHA
-                # Rate limit: don't change steer by more than MAX_STEER_RATE per frame
-                delta = new_bearing - smooth_bearing
-                delta = max(-MAX_STEER_RATE, min(MAX_STEER_RATE, delta))
+                delta = max(-STEER_RATE_LIMIT, min(STEER_RATE_LIMIT, new_bearing - smooth_bearing))
                 smooth_bearing += delta
                 smooth_accel = smooth_accel * (1 - ACCEL_ALPHA) + raw_accel * ACCEL_ALPHA
             else:
-                # Stopping — decay quickly
                 smooth_bearing *= 0.5
                 smooth_accel *= 0.3
 
             final_accel = min(smooth_accel, MAX_ACCEL)
             final_steer = max(-MAX_STEER_CMD, min(MAX_STEER_CMD, smooth_bearing))
 
-            log.info(
-                "state=%s road=%d watched=%s "
-                "bearing=%.2f dist=%.3f accel=%.2f steer=%+.2f raw_steer=%+.2f",
-                fsm.state.name, len(road_people),
-                being_watched,
-                target_bearing, target_distance, final_accel, final_steer, raw_steer,
-            )
-
             publisher.update(final_accel, final_steer)
 
-            # ── Timing ───────────────────────────────────────────────
-            elapsed = time.monotonic() - loop_start
+            elapsed = time.monotonic() - t0
             fps = 0.9 * fps + 0.1 * (1.0 / max(elapsed, 0.001))
 
-            streamer.send(road_frame, {
-                "state":   fsm.state.name,
-                "watched": being_watched,
-                "dist":    round(target_distance, 3),
-                "cmd":     [round(final_accel, 2), round(final_steer, 2)],
-                "road":    len(road_people),
-                "fps":     round(fps, 1),
-            })
-
-            print(
-                f"[{fsm.state.name:8s}] "
-                f"road:{len(road_people)} watched={being_watched} "
-                f"cmd=({final_accel:.2f},{final_steer:+.2f}) "
-                f"dist={target_distance:.3f} {elapsed*1000:.0f}ms"
+            log.info(
+                "state=%s faces=%d watched=%s bearing=%.2f dist=%.3f "
+                "accel=%.2f steer=%+.2f fps=%.0f %dms",
+                fsm.state.name, len(faces), being_watched,
+                target_bearing, target_distance,
+                final_accel, final_steer, fps, elapsed * 1000,
             )
+
+            if tick % 10 == 0:
+                print(
+                    f"[{fsm.state.name:8s}] faces:{len(faces)} watched={being_watched} "
+                    f"cmd=({final_accel:.2f},{final_steer:+.2f}) "
+                    f"{elapsed*1000:.0f}ms {fps:.0f}fps"
+                )
 
             tick += 1
 
