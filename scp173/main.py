@@ -2,6 +2,7 @@
 """SCP-173 Comma Body — main control loop."""
 
 import json
+import logging
 import socket
 import struct
 import threading
@@ -9,21 +10,27 @@ import time
 import numpy as np
 import cv2
 
+# Log to file so we can review after a run
+logging.basicConfig(
+    filename="/data/openpilot/scp173/scp173.log",
+    level=logging.INFO,
+    format="%(asctime)s %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger("scp173")
+
 from msgq.visionipc import VisionIpcClient, VisionStreamType
 
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.params import Params
 
 from scp173.config import (
-    YOLO_MODEL_PATH, DEPTH_MODEL_PATH,
     CONTROL_HZ, STREAM_HOST, STREAM_PORT,
 )
-from scp173.perception.person_detector    import PersonDetector
+from scp173.perception.person_detector_mobilenet import PersonDetector
 from scp173.perception.attention_detector import AttentionDetector
-from scp173.perception.depth_estimator    import DepthEstimator
 from scp173.behavior.state_machine        import SCP173StateMachine, State
 from scp173.control.motor_controller      import MotorController
-from scp173.behavior.navigator            import VFHNavigator
 
 
 # ── Camera helpers ────────────────────────────────────────────────────────────
@@ -125,14 +132,12 @@ def main():
 
     print("SCP-173 online. Initialising subsystems...")
 
-    detector  = PersonDetector(YOLO_MODEL_PATH)
+    detector  = PersonDetector()
     attention = AttentionDetector()
-    depth_est = DepthEstimator(DEPTH_MODEL_PATH)
     motor     = MotorController()
     publisher = CommandPublisher(motor)
     streamer  = FrameStreamer(STREAM_HOST, STREAM_PORT)
     fsm       = SCP173StateMachine()
-    navigator = VFHNavigator()
 
     print("Connecting to cameras...")
     road_cam   = connect_camera(VisionStreamType.VISION_STREAM_ROAD)
@@ -142,6 +147,7 @@ def main():
 
     tick          = 0
     driver_people = []
+    being_watched = False
     fps_t         = time.monotonic()
     fps           = 0.0
 
@@ -171,7 +177,6 @@ def main():
 
             target_bearing  = 0.0
             target_distance = 1.0
-            depth_map       = None
             source_cam      = "none"
 
             road_det   = best_detection(road_people,   road_frame.shape[1], road_frame.shape[0])
@@ -180,10 +185,10 @@ def main():
             if road_det:
                 bearing, cx, cy = road_det
                 target_bearing = bearing
-                depth_map = depth_est.estimate(wide_frame)
-                dx = int(np.clip((cx / road_frame.shape[1]) * depth_map.shape[1], 0, depth_map.shape[1] - 1))
-                dy = int(np.clip((cy / road_frame.shape[0]) * depth_map.shape[0], 0, depth_map.shape[0] - 1))
-                target_distance = float(depth_map[dy, dx])
+                # Use bbox width as distance proxy (bigger = closer = lower distance)
+                best_person = max(road_people, key=lambda p: (p[2] - p[0]) * (p[3] - p[1]))
+                bbox_w = (best_person[2] - best_person[0]) / road_frame.shape[1]
+                target_distance = max(0.01, 1.0 - bbox_w)  # 0 = filling frame, 1 = tiny
                 source_cam = "road"
 
             elif driver_det:
@@ -192,31 +197,26 @@ def main():
                 target_distance = 0.8
                 source_cam = "driver"
 
-            # ── Attention ─────────────────────────────────────────────
-            being_watched, _ = attention.is_being_watched(road_frame)
+            # ── Attention (every 3rd frame to save CPU) ───────────────
+            if tick % 3 == 0:
+                being_watched, _ = attention.is_being_watched(road_frame)
 
             # ── State machine ─────────────────────────────────────────
             raw_accel, raw_steer = fsm.update(
                 person_detected, being_watched, target_bearing, target_distance
             )
 
-            # VFH obstacle avoidance: override steer/speed when depth is available
-            if depth_map is not None and raw_accel > 0:
-                nav_speed, nav_steer = navigator.navigate(depth_map, raw_steer)
-                final_accel = min(raw_accel, nav_speed)
-                final_steer = nav_steer
-            else:
-                final_accel = raw_accel
-                final_steer = raw_steer
+            # TODO: VFH navigator + depth safety — disabled pending depth orientation fix
+            final_accel = raw_accel
+            final_steer = raw_steer
 
-            # Hard safety stop: if depth says something is very close, kill throttle
-            if depth_map is not None and final_accel > 0:
-                obstacle_mask = depth_est.get_obstacle_map(depth_map, near_threshold=0.15)
-                # Check center third of the obstacle map (directly ahead)
-                center_w = obstacle_mask.shape[1] // 3
-                center_region = obstacle_mask[:, center_w:center_w * 2]
-                if np.mean(center_region) > 0.4:  # >40% of center is blocked
-                    final_accel = 0.0
+            log.info(
+                "state=%s road=%d rear=%d watched=%s src=%s "
+                "bearing=%.2f dist=%.3f accel=%.2f steer=%+.2f",
+                fsm.state.name, len(road_people), len(driver_people),
+                being_watched, source_cam,
+                target_bearing, target_distance, final_accel, final_steer,
+            )
 
             publisher.update(final_accel, final_steer)
 
