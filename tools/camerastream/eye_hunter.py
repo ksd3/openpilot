@@ -14,10 +14,10 @@ Usage:
   Open http://localhost:8097 to see the annotated feed.
 
 Behavior:
-  - FREEZE (zero commands) if any visible person has eyes open AND faces the camera
-    (SCP-173: someone is watching the statue).
-  - Otherwise, chase the largest closed-eye person using monocular depth for range
-    and a simple three-strip depth bias for steering.
+  - FREEZE if any visible person has eyes open AND faces the camera (being watched).
+  - ADVANCE only toward people whose eyes are classified CLOSED (MediaPipe blink/squint),
+    unless --chase-largest-person (debug / ignores eyes).
+  - Range: monocular depth or bbox width; optional depth strip steer bias.
 """
 
 from __future__ import annotations
@@ -140,6 +140,40 @@ def yaw_proxy_from_landmarks(lm_list: list) -> float:
   eye_mid_x = (le.x + re.x) / 2.0
   iod = abs(re.x - le.x) + 1e-6
   return float((n.x - eye_mid_x) / iod)
+
+
+def extract_eye_blendshapes(blendshapes: list) -> tuple[float, float, float, float]:
+  """Returns blink_left, blink_right, squint_left, squint_right (0–1)."""
+  blink_left = blink_right = squint_left = squint_right = 0.0
+  for bs in blendshapes:
+    n = bs.category_name
+    if n == "eyeBlinkLeft":
+      blink_left = bs.score
+    elif n == "eyeBlinkRight":
+      blink_right = bs.score
+    elif n == "eyeSquintLeft":
+      squint_left = bs.score
+    elif n == "eyeSquintRight":
+      squint_right = bs.score
+  return blink_left, blink_right, squint_left, squint_right
+
+
+def blink_combined_score(
+  blink_l: float,
+  blink_r: float,
+  squint_l: float,
+  squint_r: float,
+  mode: str,
+  use_squint: bool,
+) -> float:
+  if mode == "max":
+    m = max(blink_l, blink_r)
+  else:
+    m = (blink_l + blink_r) / 2.0
+  if use_squint:
+    s = (squint_l + squint_r) / 2.0
+    m = 0.62 * m + 0.38 * s
+  return float(m)
 
 
 def eye_look_off_camera_score(blendshapes: list) -> float:
@@ -379,7 +413,7 @@ def detection_and_control_loop(cfg: argparse.Namespace) -> None:
         person_w = (x2 - x1) / w
         person_center_x = ((x1 + x2) / 2) / w
 
-        head_y2 = y1 + int((y2 - y1) * 0.35)
+        head_y2 = y1 + int((y2 - y1) * cfg.head_crop_fraction)
         head_x1 = max(0, x1 - int((x2 - x1) * 0.1))
         head_x2 = min(w, x2 + int((x2 - x1) * 0.1))
         head_y1 = max(0, y1)
@@ -409,18 +443,15 @@ def detection_and_control_loop(cfg: argparse.Namespace) -> None:
         yaw = yaw_proxy_from_landmarks(lm0)
         look_off = eye_look_off_camera_score(face_results.face_blendshapes[0])
 
-        blink_left = blink_right = 0.0
-        for bs in face_results.face_blendshapes[0]:
-          if bs.category_name == "eyeBlinkLeft":
-            blink_left = bs.score
-          elif bs.category_name == "eyeBlinkRight":
-            blink_right = bs.score
-        blink_avg = (blink_left + blink_right) / 2.0
-        eyes_closed = blink_avg > cfg.blink_threshold
+        blink_l, blink_r, sq_l, sq_r = extract_eye_blendshapes(face_results.face_blendshapes[0])
+        blink_metric = blink_combined_score(
+          blink_l, blink_r, sq_l, sq_r, cfg.blink_mode, cfg.blink_use_squint,
+        )
+        eyes_closed = blink_metric > cfg.blink_threshold
 
         facing = abs(yaw) < cfg.yaw_threshold and look_off < cfg.eye_look_threshold
         p = PersonPerception(
-          (x1, y1, x2, y2), True, blink_avg, eyes_closed, facing, yaw, person_center_x, person_w,
+          (x1, y1, x2, y2), True, blink_metric, eyes_closed, facing, yaw, person_center_x, person_w,
         )
         persons.append(p)
         if eyes_closed:
@@ -561,13 +592,13 @@ def detection_and_control_loop(cfg: argparse.Namespace) -> None:
           label = "OBSERVER" if not cfg.strict_open_eyes else "OPEN EYES"
         elif p.eyes_closed:
           color = (255, 0, 0) if is_chase else (255, 140, 0)
-          label = f"CLOSED blink={p.blink_avg:.2f}"
+          label = f"CLOSED blink={p.blink_avg:.2f} ({cfg.blink_mode})"
         elif is_chase and cfg.chase_largest_person:
           color = (0, 200, 255)
           label = f"CHASE blink={p.blink_avg:.2f} (--chase-largest-person)"
         else:
           color = (0, 255, 0)
-          label = f"OPEN blink={p.blink_avg:.2f} yaw={p.yaw_proxy:+.2f}"
+          label = f"OPEN blink={p.blink_avg:.2f} yaw={p.yaw_proxy:+.2f} ({cfg.blink_mode})"
 
         lw = 4 if is_chase else 2
         draw.rectangle(p.box, outline=color, width=lw)
@@ -586,7 +617,12 @@ def detection_and_control_loop(cfg: argparse.Namespace) -> None:
       draw.text((10, hud_y), f"Persons: {len(persons)}  closed-eye: {len(closed_eyes)}", fill=(255, 255, 255))
       hud_y += 20
       if state == "searching" and persons and not closed_eyes and not cfg.chase_largest_person:
-        draw.text((10, hud_y), "SCP: no closed eyes -> no chase (try --chase-largest-person or lower --blink-threshold)", fill=(255, 200, 0))
+        draw.text(
+          (10, hud_y),
+          "SCP: need CLOSED eyes to advance (lower --blink-threshold or --blink-mode max). "
+          "Or --chase-largest-person ignores eyes.",
+          fill=(255, 200, 0),
+        )
         hud_y += 20
       if hud_note_depth:
         draw.text((10, hud_y), "Depth overlay ON", fill=(0, 255, 255))
@@ -781,7 +817,29 @@ def build_arg_parser() -> argparse.ArgumentParser:
     action="store_true",
     help="Preset: small YOLO, slower depth cadence, cap ~8 vision FPS, heavier smoothing, no path bias, smaller JPEGs",
   )
-  p.add_argument("--blink-threshold", type=float, default=0.5, help="Blendshape avg above = eyes closed")
+  p.add_argument(
+    "--blink-mode",
+    choices=("avg", "max"),
+    default="max",
+    help="max=either eye closing counts (better for SCP); avg=both eyes averaged",
+  )
+  p.add_argument(
+    "--blink-use-squint",
+    action="store_true",
+    help="Mix in eyeSquint L/R blendshapes (helps when lids close without high blink score)",
+  )
+  p.add_argument(
+    "--blink-threshold",
+    type=float,
+    default=0.38,
+    help="Combined blink score above this => eyes closed (try 0.32–0.45)",
+  )
+  p.add_argument(
+    "--head-crop-fraction",
+    type=float,
+    default=0.42,
+    help="Person box height fraction used as head region for MediaPipe (larger=easier blink)",
+  )
   p.add_argument("--yaw-threshold", type=float, default=0.28, help="|yaw proxy| below = facing camera")
   p.add_argument("--eye-look-threshold", type=float, default=0.45, help="Sum eye-look blendshapes; below = looking at cam")
   p.add_argument("--strict-open-eyes", action="store_true", help="Freeze if any person has open eyes (ignore head pose)")
@@ -820,6 +878,10 @@ def apply_low_end_preset(args: argparse.Namespace) -> None:
     "(comma still streams full H.265; use device settings to cut Wi‑Fi bitrate if needed)",
     flush=True,
   )
+  args.blink_mode = "max"
+  args.blink_use_squint = True
+  if args.blink_threshold > 0.42:
+    args.blink_threshold = 0.38
 
 
 def main() -> None:
@@ -834,6 +896,17 @@ def main() -> None:
   print("=" * 50)
   print("  SCP-173 / EYE HUNTER")
   print("=" * 50)
+  if not args.chase_largest_person:
+    print(
+      "  [SCP] Only advances when someone’s eyes are CLOSED (blink score > threshold). "
+      "Observers (open eyes + facing cam) freeze you.",
+      flush=True,
+    )
+  else:
+    print(
+      "  [warn] --chase-largest-person: chases largest person even with open eyes (SCP off).",
+      flush=True,
+    )
 
   if control_enabled:
     local_ip = get_local_ip(args.addr)
