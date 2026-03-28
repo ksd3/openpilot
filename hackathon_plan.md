@@ -23,6 +23,28 @@ tentative plan:
 
 ---
 
+# SCP-173 policy (`tools/camerastream/eye_hunter.py`)
+
+**Goal:** Move toward a **closed-eye** target only when **no one is observing** the body (classic SCP-173: freeze if watched).
+
+**Observed (freeze):** `accel=0`, `steer=0` when **any** person with a detected face satisfies:
+
+- Default: **eyes open** (blink blendshapes below threshold) **and** **facing the camera** (head yaw proxy + low “eye look away” blendshape score).
+- `--strict-open-eyes`: freeze if **any** person has open eyes (ignores head pose — harsher demo mode).
+
+If one onlooker faces the camera with open eyes while another has closed eyes, the body still **freezes**.
+
+**Chase target:** Among people with **closed eyes**, pick the **largest** person box (by normalized width). **Range / throttle:** median monocular depth in the lower part of that person’s bbox vs a frame percentile (`--depth-close-percentile`, `--depth-arrived-ratio`). **Steering:** bearing to target center plus optional **path bias** from three bottom depth strips (`--path-strip-y0`, `--path-center-margin`, `--path-max-bias`). With `--no-depth`, fall back to bbox width like the original script.
+
+**Depth model:** Hugging Face `depth-anything/Depth-Anything-V2-Small-hf` via `transformers` pipeline (first run downloads weights). Use `--depth-every-n` to reuse maps. `--depth-device cuda` / `cpu`. `--show-depth-overlay` blends a debug heatmap.
+
+**Dependencies:** `uv sync --extra camerastream` (includes `mediapipe`, `ultralytics`, `transformers`, `accelerate`).
+
+**Run (PC):** `.venv/bin/python tools/camerastream/eye_hunter.py <comma_ip> --camera wide`  
+Device still needs: `cereal/messaging/bridge <pc_ip> testJoystick` for commands.
+
+---
+
 # Step 1 Breakdown: Camera Streaming from Comma v4 to PC
 
 ## Architecture
