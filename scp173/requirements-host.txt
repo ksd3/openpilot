@@ -1,21 +1,28 @@
-# SCP-173 Comma Body — Comma 4 runtime dependencies
+# SCP-173 Comma Body — host machine dependencies
 #
-# Install on the Comma 4 via SSH:
-#   uv pip install -r scp173/requirements-comma4.txt
+# Covers two host-side tools:
+#   1. Model export (run once to produce .onnx files)
+#   2. Live debug viewer (scp173/tools/viewer.py)
 #
-# numpy and opencv-python-headless are already provided by openpilot's
-# pyproject.toml — listed here for completeness, pip/uv will skip them
-# if already satisfied.
+# Setup:
+#   python -m venv scp173-env
+#   source scp173-env/bin/activate
+#   pip install -r scp173/requirements-host.txt
+#
+# Export models:
+#   python scp173/tools/export_yolo.py
+#   python scp173/tools/export_depth.py --repo /path/to/Depth-Anything-V2
+#
+# Run viewer (from openpilot repo root):
+#   python scp173/tools/viewer.py --addr 192.168.63.120
 
-# Perception inference — CPU ONNX Runtime for Snapdragon 845 (aarch64)
-onnxruntime >= 1.18.0
+# ── Model export ──────────────────────────────────────────────────────────────
+ultralytics >= 8.2.0
+torch >= 2.3.0
+torchvision >= 0.18.0
 
-# Attention detection — MediaPipe Face Mesh (head pose + eye state)
-mediapipe >= 0.10.14
-
-# Audio — scrape loop + strike stinger
-pygame >= 2.5.2
-
-# Already in openpilot (listed for completeness)
-numpy >= 2.0
-opencv-python-headless >= 4.10.0
+# ── Live viewer ───────────────────────────────────────────────────────────────
+pyzmq >= 25.0
+av >= 12.0           # PyAV — H.264 decode via ffmpeg
+opencv-python >= 4.8
+numpy >= 1.24
