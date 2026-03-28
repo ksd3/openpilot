@@ -49,6 +49,7 @@ pkgs = [importlib.import_module(name) for name in pkg_names]
 allowed_system_libs = {
   "EGL", "GLESv2", "GL",
   "Qt5Charts", "Qt5Core", "Qt5Gui", "Qt5Widgets",
+  "OpenCL",
   "dl", "drm", "gbm", "m", "pthread",
 }
 
@@ -210,9 +211,10 @@ Clean(["."], cache_dir)
 
 # Build common module
 SConscript(['common/SConscript'])
-Import('_common')
+Import('_common', '_gpucommon')
 common = [_common, 'json11', 'zmq']
-Export('common')
+gpucommon = [_gpucommon]
+Export('common', 'gpucommon')
 
 # Build messaging (cereal + msgq + socketmaster + their dependencies)
 # Enable swaglog include in submodules
