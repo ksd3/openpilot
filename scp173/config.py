@@ -33,6 +33,19 @@ VFH_ROBOT_WIDTH_SECTORS = 3
 VFH_MAX_SPEED          = 0.7
 VFH_TURN_GAIN          = 1.2
 
+# ── Occupancy Grid / Exploration ─────────────────────────────────────
+GRID_SIZE_M            = 10.0     # physical grid extent (meters, square)
+GRID_RESOLUTION        = 0.05    # meters per cell (5 cm → 200×200 grid)
+GRID_CELLS             = int(GRID_SIZE_M / GRID_RESOLUTION)
+DEPTH_SCALE_M          = 3.0     # depth=1.0 ≈ this many meters (tune empirically)
+DEPTH_FOV_DEG          = 72.0    # wide camera horizontal FOV
+LOG_ODDS_FREE          = -0.4    # free-space observation weight
+LOG_ODDS_OCCUPIED      = 0.85    # obstacle observation weight
+LOG_ODDS_CLAMP         = 5.0     # prevent saturation
+FRONTIER_MIN_CLUSTER   = 3       # min frontier cells for valid target
+EXPLORE_SPEED_SCALE    = 0.8     # scale VFH speed during exploration
+GRID_RAY_SAMPLE_COLS   = 36      # depth map columns to sample per update
+
 # ── Debug streaming ───────────────────────────────────────────────────────────
 # Set STREAM_HOST to your local machine's IP to receive frames in viewer.py
 # Leave empty to disable streaming

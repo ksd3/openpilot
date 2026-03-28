@@ -2,6 +2,7 @@
 """SCP-173 Comma Body — main control loop."""
 
 import json
+import math
 import socket
 import struct
 import threading
@@ -10,18 +11,21 @@ import numpy as np
 import cv2
 
 from msgq.visionipc import VisionIpcClient, VisionStreamType
+import cereal.messaging as messaging
 
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.params import Params
 
 from scp173.config import (
     YOLO_MODEL_PATH, DEPTH_MODEL_PATH,
-    CONTROL_HZ, STREAM_HOST, STREAM_PORT,
+    STREAM_HOST, STREAM_PORT, EXPLORE_SPEED_SCALE,
 )
 from scp173.perception.person_detector    import PersonDetector
 from scp173.perception.attention_detector import AttentionDetector
 from scp173.perception.depth_estimator    import DepthEstimator
-from scp173.behavior.state_machine        import SCP173StateMachine, State
+from scp173.perception.occupancy_grid     import OccupancyGrid
+from scp173.behavior.state_machine        import SCP173StateMachine
+from scp173.behavior.navigator            import VFHNavigator
 from scp173.control.motor_controller      import MotorController
 
 
@@ -131,6 +135,9 @@ def main():
     publisher = CommandPublisher(motor)
     streamer  = FrameStreamer(STREAM_HOST, STREAM_PORT)
     fsm       = SCP173StateMachine()
+    vfh       = VFHNavigator()
+    occ_grid  = OccupancyGrid()
+    sm        = messaging.SubMaster(['cameraOdometry'])
 
     print("Connecting to cameras...")
     road_cam   = connect_camera(VisionStreamType.VISION_STREAM_ROAD)
@@ -159,6 +166,15 @@ def main():
             road_frame   = yuv_to_bgr(road_buf)
             wide_frame   = yuv_to_bgr(wide_buf)
             driver_frame = yuv_to_bgr(driver_buf)
+
+            # ── Odometry ──────────────────────────────────────────────
+            sm.update(0)
+            if sm.updated['cameraOdometry']:
+                odo = sm['cameraOdometry']
+                occ_grid.pose.update(
+                    list(odo.trans), list(odo.rot),
+                    time.monotonic(),
+                )
 
             # ── Detection ────────────────────────────────────────────
             road_people = detector.detect(road_frame)
@@ -198,16 +214,26 @@ def main():
                 person_detected, being_watched, target_bearing, target_distance
             )
 
-            # Obstacle avoidance disabled — robot moves at full computed speed
-            final_accel = raw_accel
-            final_steer = raw_steer
+            # ── Motor commands ────────────────────────────────────────
+            if math.isnan(raw_accel):
+                # EXPLORE mode — compute depth, update grid, use VFH
+                if depth_map is None:
+                    depth_map = depth_est.estimate(wide_frame)
+                occ_grid.update(depth_map)
+                explore_bearing = occ_grid.get_exploration_bearing()
+                final_accel, final_steer = vfh.navigate(depth_map, explore_bearing)
+                final_accel *= EXPLORE_SPEED_SCALE
+            else:
+                final_accel = raw_accel
+                final_steer = raw_steer
 
             publisher.update(final_accel, final_steer)
 
             # ── Stream frame to viewer ────────────────────────────────
             elapsed = time.monotonic() - loop_start
             fps = 0.9 * fps + 0.1 * (1.0 / max(elapsed, 0.001))
-            streamer.send(road_frame, {
+            grid_stats = occ_grid.get_stats()
+            meta = {
                 "state":   fsm.state.name,
                 "watched": being_watched,
                 "dist":    round(target_distance, 3),
@@ -216,7 +242,9 @@ def main():
                 "road":    len(road_people),
                 "rear":    len(driver_people),
                 "fps":     round(fps, 1),
-            })
+            }
+            meta.update(grid_stats)
+            streamer.send(road_frame, meta)
 
             # ── Debug ─────────────────────────────────────────────────
             print(
@@ -224,7 +252,10 @@ def main():
                 f"road:{len(road_people)} rear:{len(driver_people)} "
                 f"src={source_cam} watched={being_watched} "
                 f"cmd=({final_accel:.2f},{final_steer:+.2f}) "
-                f"dist={target_distance:.3f} {elapsed*1000:.0f}ms"
+                f"dist={target_distance:.3f} "
+                f"pose={grid_stats['pose']} yaw={grid_stats['yaw_deg']}deg "
+                f"explored={grid_stats['explored_pct']}% "
+                f"{elapsed*1000:.0f}ms"
             )
 
             tick += 1

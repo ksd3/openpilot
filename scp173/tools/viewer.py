@@ -150,6 +150,7 @@ def main():
 
     COLOURS = {
         "IDLE":     (128, 128, 128),
+        "EXPLORE":  (0,   255,   0),
         "STALKING": (0,   165, 255),
         "FROZEN":   (255,   0,   0),
         "STRIKE":   (0,     0, 255),

@@ -8,23 +8,32 @@ from scp173.config import STRIKE_DISTANCE, STRIKE_COOLDOWN, FREEZE_GRACE
 
 class State(Enum):
     IDLE     = auto()
+    EXPLORE  = auto()
     STALKING = auto()
     FROZEN   = auto()
     STRIKE   = auto()
+
+
+# Sentinel returned by EXPLORE so main.py knows to compute VFH commands
+EXPLORE_SENTINEL = (float('nan'), float('nan'))
 
 
 class SCP173StateMachine:
     """Behavioural core of the SCP-173 robot.
 
     Call update() every control tick.  Returns (accel, steer) motor command
-    in the range [0, 1] and [-1, 1] respectively.
+    in the range [0, 1] and [-1, 1] respectively.  EXPLORE returns
+    EXPLORE_SENTINEL (NaN, NaN) so the caller computes VFH commands.
 
     State transitions:
-      IDLE → STALKING  : person detected and not being watched
-      STALKING → FROZEN: being watched (instant freeze)
-      STALKING → STRIKE: person within STRIKE_DISTANCE while not watched
-      FROZEN → STALKING: not watched for longer than FREEZE_GRACE
-      STRIKE → IDLE    : after STRIKE_COOLDOWN seconds
+      IDLE → EXPLORE   : immediately (IDLE is just a pass-through)
+      EXPLORE → STALKING: person detected and not being watched
+      EXPLORE → FROZEN  : person detected and being watched
+      STALKING → FROZEN : being watched (instant freeze)
+      STALKING → STRIKE : person within STRIKE_DISTANCE while not watched
+      STALKING → EXPLORE: person lost
+      FROZEN → STALKING : not watched for longer than FREEZE_GRACE
+      STRIKE → EXPLORE  : after STRIKE_COOLDOWN seconds
     """
 
     def __init__(self, on_strike_callback=None):
@@ -46,9 +55,18 @@ class SCP173StateMachine:
         t = now if now is not None else time.monotonic()
 
         if self.state == State.IDLE:
-            if person_detected and not being_watched:
-                self.state = State.STALKING
-            return (0.0, 0.0)
+            self.state = State.EXPLORE
+            return EXPLORE_SENTINEL
+
+        elif self.state == State.EXPLORE:
+            if person_detected:
+                if being_watched:
+                    self.state = State.FROZEN
+                    self._last_watched_time = t
+                    return (0.0, 0.0)
+                else:
+                    self.state = State.STALKING
+            return EXPLORE_SENTINEL
 
         elif self.state == State.STALKING:
             if being_watched:
@@ -57,8 +75,8 @@ class SCP173StateMachine:
                 return (0.0, 0.0)
 
             if not person_detected:
-                self.state = State.IDLE
-                return (0.0, 0.0)
+                self.state = State.EXPLORE
+                return EXPLORE_SENTINEL
 
             if target_distance < STRIKE_DISTANCE:
                 self.state = State.STRIKE
@@ -82,7 +100,7 @@ class SCP173StateMachine:
 
         elif self.state == State.STRIKE:
             if (t - self._strike_time) > STRIKE_COOLDOWN:
-                self.state = State.IDLE
+                self.state = State.EXPLORE
             return (0.0, 0.0)
 
         return (0.0, 0.0)
