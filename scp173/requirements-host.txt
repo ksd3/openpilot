@@ -1,0 +1,28 @@
+# SCP-173 Comma Body — host machine dependencies
+#
+# Covers two host-side tools:
+#   1. Model export (run once to produce .onnx files)
+#   2. Live debug viewer (scp173/tools/viewer.py)
+#
+# Setup:
+#   python -m venv scp173-env
+#   source scp173-env/bin/activate
+#   pip install -r scp173/requirements-host.txt
+#
+# Export models:
+#   python scp173/tools/export_yolo.py
+#   python scp173/tools/export_depth.py --repo /path/to/Depth-Anything-V2
+#
+# Run viewer (from openpilot repo root):
+#   python scp173/tools/viewer.py --addr 192.168.63.120
+
+# ── Model export ──────────────────────────────────────────────────────────────
+ultralytics >= 8.2.0
+torch >= 2.3.0
+torchvision >= 0.18.0
+
+# ── Live viewer ───────────────────────────────────────────────────────────────
+pyzmq >= 25.0
+av >= 12.0           # PyAV — H.264 decode via ffmpeg
+opencv-python >= 4.8
+numpy >= 1.24
