@@ -64,6 +64,10 @@ latest_jpeg_lock = threading.Lock()
 status_info = {"state": "searching", "targets": 0, "fps": 0.0, "steer": 0.0, "throttle": 0.0}
 status_lock = threading.Lock()
 
+# Shared control commands (updated by detection loop, sent by command thread)
+current_cmd = {"accel": 0.0, "steer": 0.0}
+current_cmd_lock = threading.Lock()
+
 
 def get_port(endpoint: str) -> int:
   fnv_prime = 0x100000001b3
@@ -95,6 +99,23 @@ def build_joystick_msg(accel: float, steer: float) -> bytes:
   return msg.to_bytes()
 
 
+def command_sender_loop(addr: str):
+  """Send testJoystick commands at 100Hz so joystickd doesn't time out."""
+  joystick_port = get_port("testJoystick")
+  ctx = zmq.Context()
+  pub_sock = ctx.socket(zmq.PUB)
+  pub_sock.bind(f"tcp://0.0.0.0:{joystick_port}")
+  print(f"[control] Publishing testJoystick at 100Hz on port {joystick_port}")
+
+  while True:
+    with current_cmd_lock:
+      accel = current_cmd["accel"]
+      steer = current_cmd["steer"]
+    msg_bytes = build_joystick_msg(accel, steer)
+    pub_sock.send(msg_bytes)
+    time.sleep(0.01)  # 100Hz
+
+
 def detection_and_control_loop(addr: str, camera: str, control_enabled: bool):
   global latest_annotated_jpeg
 
@@ -117,14 +138,6 @@ def detection_and_control_loop(addr: str, camera: str, control_enabled: bool):
   sub_sock.setsockopt(zmq.CONFLATE, 1)
   sub_sock.connect(zmq_endpoint)
 
-  # publisher for joystick commands
-  pub_sock = None
-  if control_enabled:
-    joystick_port = get_port("testJoystick")
-    pub_sock = ctx.socket(zmq.PUB)
-    pub_sock.bind(f"tcp://0.0.0.0:{joystick_port}")
-    print(f"[control] Publishing testJoystick on port {joystick_port}")
-
   codec = av.CodecContext.create("hevc", "r")
 
   # YOLO for person detection (runs on GPU)
@@ -146,7 +159,6 @@ def detection_and_control_loop(addr: str, camera: str, control_enabled: bool):
   seen_iframe = False
   fps_count = 0
   fps_time = time.monotonic()
-  last_cmd_time = time.monotonic()
 
   while True:
     try:
@@ -235,7 +247,8 @@ def detection_and_control_loop(addr: str, camera: str, control_enabled: bool):
 
         error = target_x - 0.5
         if abs(error) > STEER_DEADZONE:
-          steer_cmd = np.clip(error * 2.0, -MAX_STEER, MAX_STEER)
+          # negate: body v2 carcontroller negates torque, so we invert here
+          steer_cmd = np.clip(-error * 2.0, -MAX_STEER, MAX_STEER)
 
         if target_face_size > FACE_SIZE_CLOSE:
           throttle_cmd = 0.0
@@ -245,12 +258,12 @@ def detection_and_control_loop(addr: str, camera: str, control_enabled: bool):
                                    MIN_THROTTLE, MAX_THROTTLE)
           state = "targeting"
 
-      # send control command
+      # update shared control command (sent at 100Hz by command_sender_loop)
       now = time.monotonic()
-      if control_enabled and pub_sock and (now - last_cmd_time) >= 0.01:
-        msg_bytes = build_joystick_msg(throttle_cmd, steer_cmd)
-        pub_sock.send(msg_bytes)
-        last_cmd_time = now
+      if control_enabled:
+        with current_cmd_lock:
+          current_cmd["accel"] = throttle_cmd
+          current_cmd["steer"] = steer_cmd
 
       # annotate frame
       pil_img = Image.fromarray(frame_rgb)
@@ -431,6 +444,10 @@ def main():
 
   print(f"\n  Open http://localhost:{args.port} to see the feed")
   print("=" * 50)
+
+  if control_enabled:
+    cmd_thread = threading.Thread(target=command_sender_loop, args=(args.addr,), daemon=True)
+    cmd_thread.start()
 
   t = threading.Thread(target=detection_and_control_loop,
                        args=(args.addr, args.camera, control_enabled), daemon=True)
