@@ -28,7 +28,7 @@ from scp173.config import (
     CONTROL_HZ, STREAM_HOST, STREAM_PORT,
 )
 from scp173.perception.person_detector_mobilenet import PersonDetector
-from scp173.perception.attention_detector import AttentionDetector
+from scp173.perception.attention_detector_fast import AttentionDetector
 from scp173.behavior.state_machine        import SCP173StateMachine, State
 from scp173.control.motor_controller      import MotorController
 
@@ -197,18 +197,19 @@ def main():
                 target_distance = 0.8
                 source_cam = "driver"
 
-            # ── Attention (every 3rd frame to save CPU) ───────────────
-            if tick % 3 == 0:
-                being_watched, _ = attention.is_being_watched(road_frame)
+            # ── Attention ─────────────────────────────────────────────
+            being_watched, _ = attention.is_being_watched(road_frame)
 
             # ── State machine ─────────────────────────────────────────
             raw_accel, raw_steer = fsm.update(
                 person_detected, being_watched, target_bearing, target_distance
             )
 
-            # TODO: VFH navigator + depth safety — disabled pending depth orientation fix
-            final_accel = raw_accel
-            final_steer = raw_steer
+            # Cap speed for safety — low framerate means slow reaction time
+            MAX_ACCEL = 0.1
+            MAX_STEER_CMD = 0.3
+            final_accel = min(raw_accel, MAX_ACCEL)
+            final_steer = max(-MAX_STEER_CMD, min(MAX_STEER_CMD, raw_steer))
 
             log.info(
                 "state=%s road=%d rear=%d watched=%s src=%s "
