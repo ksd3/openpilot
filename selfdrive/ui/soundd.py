@@ -33,9 +33,9 @@ AudibleAlert = car.CarControl.HUDControl.AudibleAlert
 
 sound_list: dict[int, tuple[str, int | None, float]] = {
   # AudibleAlert, file name, play count (none for infinite)
-  AudibleAlert.engage: ("engage.wav", 1, MAX_VOLUME),
-  AudibleAlert.disengage: ("disengage.wav", 1, MAX_VOLUME),
-  AudibleAlert.refuse: ("refuse.wav", 1, MAX_VOLUME),
+  AudibleAlert.engage: ("run.wav", 1, MAX_VOLUME),
+  AudibleAlert.disengage: ("iamsinistar.wav", 1, MAX_VOLUME),
+  AudibleAlert.refuse: ("sinistar.wav", 1, MAX_VOLUME),
 
   AudibleAlert.prompt: ("prompt.wav", 1, MAX_VOLUME),
   AudibleAlert.promptRepeat: ("prompt.wav", None, MAX_VOLUME),
