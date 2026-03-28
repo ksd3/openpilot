@@ -130,7 +130,21 @@ def main():
     params = Params()
     params.put_bool("JoystickDebugMode", True)
 
-    print("SCP-173 online. Initialising subsystems...")
+    print("SCP-173 online. Waiting for joystickd to start...")
+    for _ in range(30):
+        if params.get_bool("JoystickDebugMode"):
+            break
+        params.put_bool("JoystickDebugMode", True)
+        time.sleep(1)
+
+    # Keep re-setting it in case manager clears it
+    def keep_joystick_mode():
+        while True:
+            params.put_bool("JoystickDebugMode", True)
+            time.sleep(2)
+    threading.Thread(target=keep_joystick_mode, daemon=True).start()
+
+    print("JoystickDebugMode set. Initialising subsystems...")
 
     detector  = PersonDetector()
     attention = AttentionDetector()
@@ -206,8 +220,8 @@ def main():
             )
 
             # Cap speed for safety — low framerate means slow reaction time
-            MAX_ACCEL = 0.1
-            MAX_STEER_CMD = 0.3
+            MAX_ACCEL = 0.25
+            MAX_STEER_CMD = 0.4
             final_accel = min(raw_accel, MAX_ACCEL)
             final_steer = max(-MAX_STEER_CMD, min(MAX_STEER_CMD, raw_steer))
 
