@@ -77,6 +77,9 @@ dependencies = [
   "qrcode",
   "jeepney",
   "pillow",
+
+  # modeld (same pin as former tinygrad_repo submodule; install via uv/pip instead of vendoring)
+  "tinygrad @ git+https://github.com/tinygrad/tinygrad.git@2f55005ad93c777cca69b20dddc28c7f02f0eb01",
 ]
 
 [project.optional-dependencies]

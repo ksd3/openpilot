@@ -91,3 +91,18 @@ TASK.md
 Depth-Anything-V2/
 scp173-env/
 scp173-export-env/
+
+# Installed Python / JS deps (provided by uv sync / pip / npm — never commit)
+.uv/
+**/.venv/
+**/site-packages/
+*.egg-info/
+.eggs/
+dist/
+wheels/
+pip-wheel-metadata/
+node_modules/
+
+# Large NN weights — not listed as files in pyproject; use comma release assets or local export
+selfdrive/modeld/models/*.onnx
+scp173/models/*.onnx
