@@ -20,3 +20,11 @@ tentative plan:
    to the model. so figure out how to do that
 
 3. then go from deploying it on a PC to deploying it on the comma v4 (stretch)
+
+
+# FAQ
+
+1. How to SSH into the thing
+a. only one person can SSH in at once time. Be on `unifi` WIFI and ssh comma@192.168.63.120. 
+   you should have a github account that you logged into `connect.comma.ai` with
+   and also set the ssh username on the comma v4 to your github username
