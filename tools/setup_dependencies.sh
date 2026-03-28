@@ -33,7 +33,8 @@ function install_ubuntu_deps() {
   # Detect OS using /etc/os-release file
   if [ -f "/etc/os-release" ]; then
     source /etc/os-release
-    case "$VERSION_CODENAME" in
+    OP_UBUNTU_CODENAME="${UBUNTU_CODENAME:-$VERSION_CODENAME}"
+    case "$OP_UBUNTU_CODENAME" in
       "jammy" | "kinetic" | "noble")
         ;;
       *)
