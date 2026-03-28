@@ -23,6 +23,7 @@ from scp173.perception.attention_detector import AttentionDetector
 from scp173.perception.depth_estimator    import DepthEstimator
 from scp173.behavior.state_machine        import SCP173StateMachine, State
 from scp173.control.motor_controller      import MotorController
+from scp173.behavior.navigator            import VFHNavigator
 
 
 # ── Camera helpers ────────────────────────────────────────────────────────────
@@ -131,6 +132,7 @@ def main():
     publisher = CommandPublisher(motor)
     streamer  = FrameStreamer(STREAM_HOST, STREAM_PORT)
     fsm       = SCP173StateMachine()
+    navigator = VFHNavigator()
 
     print("Connecting to cameras...")
     road_cam   = connect_camera(VisionStreamType.VISION_STREAM_ROAD)
@@ -198,9 +200,14 @@ def main():
                 person_detected, being_watched, target_bearing, target_distance
             )
 
-            # Obstacle avoidance disabled — robot moves at full computed speed
-            final_accel = raw_accel
-            final_steer = raw_steer
+            # VFH obstacle avoidance: override steer/speed when depth is available
+            if depth_map is not None and raw_accel > 0:
+                nav_speed, nav_steer = navigator.navigate(depth_map, raw_steer)
+                final_accel = min(raw_accel, nav_speed)
+                final_steer = nav_steer
+            else:
+                final_accel = raw_accel
+                final_steer = raw_steer
 
             publisher.update(final_accel, final_steer)
 
