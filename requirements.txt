@@ -1,0 +1,132 @@
+absl-py==2.4.0
+aiohappyeyeballs==2.6.1
+aiohttp==3.13.3
+aioice==0.10.2
+aiortc==1.14.0
+aiosignal==1.4.0
+annotated-doc==0.0.4
+anyio==4.13.0
+attrs==26.1.0
+av==16.1.0
+bzip2 @ git+https://github.com/commaai/dependencies.git@90b7fefbe37fc2ca26597e6e9e0035dd386effa1#subdirectory=bzip2
+capnproto @ git+https://github.com/commaai/dependencies.git@05582563f2fdf6638a550fef61b129a2fb288d05#subdirectory=capnproto
+casadi==3.7.2
+certifi==2026.2.25
+cffi==2.0.0
+charset-normalizer==3.4.6
+click==8.3.1
+contourpy==1.3.3
+crcmod-plus==2.3.1
+cryptography==46.0.5
+cuda-bindings==13.2.0
+cuda-pathfinder==1.5.0
+cuda-toolkit==13.0.2
+cycler==0.12.1
+cython==3.2.4
+dnspython==2.8.0
+eigen @ git+https://github.com/commaai/dependencies.git@40e5d76de1b33a86c5181b63db6782d8f06da1da#subdirectory=eigen
+ffmpeg @ git+https://github.com/commaai/dependencies.git@b9732165bcf5a3fab83b05994187802a0d115b6e#subdirectory=ffmpeg
+filelock==3.25.2
+flatbuffers==25.12.19
+fonttools==4.62.1
+frozenlist==1.8.0
+fsspec==2026.3.0
+gcc-arm-none-eabi @ git+https://github.com/commaai/dependencies.git@15a616d4f08f6b8ecaa9b2390c75d2fe0c0fffb8#subdirectory=gcc-arm-none-eabi
+git-lfs @ git+https://github.com/commaai/dependencies.git@f77417aad13a05b03bb2696a0b5a124f339d117b#subdirectory=git-lfs
+google-crc32c==1.8.0
+h11==0.16.0
+hf-xet==1.4.2
+httpcore==1.0.9
+httpx==0.28.1
+huggingface-hub==1.8.0
+idna==3.11
+ifaddr==0.2.0
+inputs==0.5
+jeepney==0.9.0
+jinja2==3.1.6
+json-rpc==1.15.0
+kiwisolver==1.5.0
+libjpeg @ git+https://github.com/commaai/dependencies.git@2d69723fe445dadc68ceb9072510a505111b64a7#subdirectory=libjpeg
+libusb @ git+https://github.com/commaai/dependencies.git@8daf8079f98809ef4674177bca915a0a81eac52f#subdirectory=libusb
+libusb1==3.3.1
+libyuv @ git+https://github.com/commaai/dependencies.git@28c3c2a2444232aeeaf989c33fd333ce74e6fc90#subdirectory=libyuv
+markdown-it-py==4.0.0
+markupsafe==3.0.3
+matplotlib==3.10.8
+mdurl==0.1.2
+mediapipe==0.10.33
+mpmath==1.3.0
+multidict==6.7.1
+ncurses @ git+https://github.com/commaai/dependencies.git@e33e7f648009ad97638b1a0a373a06a05526c040#subdirectory=ncurses
+networkx==3.6.1
+numpy==2.4.3
+nvidia-cublas==13.1.0.3
+nvidia-cuda-cupti==13.0.85
+nvidia-cuda-nvrtc==13.0.88
+nvidia-cuda-runtime==13.0.96
+nvidia-cudnn-cu13==9.19.0.56
+nvidia-cufft==12.0.0.61
+nvidia-cufile==1.15.1.6
+nvidia-curand==10.4.0.35
+nvidia-cusolver==12.0.4.66
+nvidia-cusparse==12.6.3.3
+nvidia-cusparselt-cu13==0.8.0
+nvidia-nccl-cu13==2.28.9
+nvidia-nvjitlink==13.0.88
+nvidia-nvshmem-cu13==3.4.5
+nvidia-nvtx==13.0.85
+opencv-contrib-python==4.13.0.92
+opencv-python==4.13.0.92
+-e file:///home/me/comma/openpilot
+packaging==26.0
+pillow==12.1.1
+polars==1.39.3
+polars-runtime-32==1.39.3
+propcache==0.4.1
+psutil==7.2.2
+pycapnp==2.2.2
+pycparser==3.0
+pycryptodome==3.23.0
+pyee==13.0.1
+pygments==2.19.2
+pyjwt==2.12.1
+pylibsrtp==1.0.0
+pyopenssl==26.0.0
+pyparsing==3.3.2
+pyserial==3.5
+python-dateutil==2.9.0.post0
+pyyaml==6.0.3
+pyzmq==27.1.0
+qrcode==8.2
+raylib==5.5.0.4
+regex==2026.2.28
+requests==2.32.5
+rich==14.3.3
+safetensors==0.7.0
+scipy==1.17.1
+scons==4.10.1
+sentry-sdk==2.55.0
+setproctitle==1.3.7
+setuptools==81.0.0
+shellingham==1.5.4
+six==1.17.0
+sounddevice==0.5.5
+spidev==3.8
+sympy==1.14.0
+tokenizers==0.22.2
+torch==2.11.0
+torchvision==0.26.0
+tqdm==4.67.3
+transformers==5.4.0
+triton==3.6.0
+typer==0.24.1
+typing-extensions==4.15.0
+ultralytics==8.4.30
+ultralytics-thop==2.0.18
+urllib3==2.6.3
+websocket-client==1.9.0
+xattr==1.3.0
+yarl==1.23.0
+zeromq @ git+https://github.com/commaai/dependencies.git@0f7d2b9121cc30c0e377717fc1db52205a8e4c80#subdirectory=zeromq
+zstandard==0.25.0
+zstd @ git+https://github.com/commaai/dependencies.git@b2b10636beba0384eada30979651b4ca7cf919ff#subdirectory=zstd
