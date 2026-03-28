@@ -111,7 +111,6 @@ class FrameStreamer:
         if not self._enabled:
             return
         try:
-            # Resize to 640x480 to keep UDP packet small
             small = cv2.resize(frame, (640, 480))
             _, jpeg = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 60])
             meta_bytes = json.dumps(meta).encode()
@@ -146,114 +145,102 @@ def main():
 
     print("JoystickDebugMode set. Initialising subsystems...")
 
-    detector  = PersonDetector()
+    detector  = PersonDetector(input_size=200)  # smaller = faster
     attention = AttentionDetector()
     motor     = MotorController()
     publisher = CommandPublisher(motor)
     streamer  = FrameStreamer(STREAM_HOST, STREAM_PORT)
     fsm       = SCP173StateMachine()
 
-    print("Connecting to cameras...")
-    road_cam   = connect_camera(VisionStreamType.VISION_STREAM_ROAD)
-    wide_cam   = connect_camera(VisionStreamType.VISION_STREAM_WIDE_ROAD)
-    driver_cam = connect_camera(VisionStreamType.VISION_STREAM_DRIVER)
-    print("All cameras connected. Beginning containment breach...")
+    print("Connecting to road camera...")
+    road_cam = connect_camera(VisionStreamType.VISION_STREAM_ROAD)
+    print("Camera connected. Beginning containment breach...")
 
-    tick          = 0
-    driver_people = []
-    being_watched = False
-    fps_t         = time.monotonic()
-    fps           = 0.0
+    tick           = 0
+    being_watched  = False
+    smooth_bearing = 0.0
+    smooth_accel   = 0.0
+    BEARING_ALPHA  = 0.4   # 0 = ignore new, 1 = fully trust new reading
+    ACCEL_ALPHA    = 0.3
+    MAX_ACCEL      = 0.2
+    MAX_STEER_CMD  = 0.3
+    fps            = 0.0
 
     try:
         while True:
             loop_start = time.monotonic()
 
-            # ── Frames ───────────────────────────────────────────────
-            road_buf   = road_cam.recv()
-            wide_buf   = wide_cam.recv()
-            driver_buf = driver_cam.recv()
-
-            if road_buf is None or wide_buf is None or driver_buf is None:
+            # ── Frame ────────────────────────────────────────────────
+            road_buf = road_cam.recv()
+            if road_buf is None:
                 publisher.update(0.0, 0.0)
                 continue
 
-            road_frame   = yuv_to_bgr(road_buf)
-            wide_frame   = yuv_to_bgr(wide_buf)
-            driver_frame = yuv_to_bgr(driver_buf)
+            road_frame = yuv_to_bgr(road_buf)
+            h, w = road_frame.shape[:2]
 
             # ── Detection ────────────────────────────────────────────
             road_people = detector.detect(road_frame)
-            if tick % 5 == 0:
-                driver_people = detector.detect(driver_frame)
-
-            person_detected = (len(road_people) + len(driver_people)) > 0
+            person_detected = len(road_people) > 0
 
             target_bearing  = 0.0
             target_distance = 1.0
-            source_cam      = "none"
 
-            road_det   = best_detection(road_people,   road_frame.shape[1], road_frame.shape[0])
-            driver_det = best_detection(driver_people, driver_frame.shape[1], driver_frame.shape[0])
+            if person_detected:
+                det = best_detection(road_people, w, h)
+                if det:
+                    bearing, cx, cy = det
+                    target_bearing = bearing
+                    best_person = max(road_people, key=lambda p: (p[2] - p[0]) * (p[3] - p[1]))
+                    bbox_w = (best_person[2] - best_person[0]) / w
+                    target_distance = max(0.01, 1.0 - bbox_w)
 
-            if road_det:
-                bearing, cx, cy = road_det
-                target_bearing = bearing
-                # Use bbox width as distance proxy (bigger = closer = lower distance)
-                best_person = max(road_people, key=lambda p: (p[2] - p[0]) * (p[3] - p[1]))
-                bbox_w = (best_person[2] - best_person[0]) / road_frame.shape[1]
-                target_distance = max(0.01, 1.0 - bbox_w)  # 0 = filling frame, 1 = tiny
-                source_cam = "road"
-
-            elif driver_det:
-                bearing, _, _ = driver_det
-                target_bearing  = -bearing
-                target_distance = 0.8
-                source_cam = "driver"
-
-            # ── Attention ─────────────────────────────────────────────
+            # ── Attention ────────────────────────────────────────────
             being_watched, _ = attention.is_being_watched(road_frame)
 
-            # ── State machine ─────────────────────────────────────────
+            # ── State machine ────────────────────────────────────────
             raw_accel, raw_steer = fsm.update(
                 person_detected, being_watched, target_bearing, target_distance
             )
 
-            # Cap speed for safety — low framerate means slow reaction time
-            MAX_ACCEL = 0.25
-            MAX_STEER_CMD = 0.4
-            final_accel = min(raw_accel, MAX_ACCEL)
-            final_steer = max(-MAX_STEER_CMD, min(MAX_STEER_CMD, raw_steer))
+            # ── Smoothing ────────────────────────────────────────────
+            if raw_accel > 0:
+                smooth_bearing = smooth_bearing * (1 - BEARING_ALPHA) + raw_steer * BEARING_ALPHA
+                smooth_accel = smooth_accel * (1 - ACCEL_ALPHA) + raw_accel * ACCEL_ALPHA
+            else:
+                # Stopping — decay quickly
+                smooth_bearing *= 0.5
+                smooth_accel *= 0.3
+
+            final_accel = min(smooth_accel, MAX_ACCEL)
+            final_steer = max(-MAX_STEER_CMD, min(MAX_STEER_CMD, smooth_bearing))
 
             log.info(
-                "state=%s road=%d rear=%d watched=%s src=%s "
-                "bearing=%.2f dist=%.3f accel=%.2f steer=%+.2f",
-                fsm.state.name, len(road_people), len(driver_people),
-                being_watched, source_cam,
-                target_bearing, target_distance, final_accel, final_steer,
+                "state=%s road=%d watched=%s "
+                "bearing=%.2f dist=%.3f accel=%.2f steer=%+.2f raw_steer=%+.2f",
+                fsm.state.name, len(road_people),
+                being_watched,
+                target_bearing, target_distance, final_accel, final_steer, raw_steer,
             )
 
             publisher.update(final_accel, final_steer)
 
-            # ── Stream frame to viewer ────────────────────────────────
+            # ── Timing ───────────────────────────────────────────────
             elapsed = time.monotonic() - loop_start
             fps = 0.9 * fps + 0.1 * (1.0 / max(elapsed, 0.001))
+
             streamer.send(road_frame, {
                 "state":   fsm.state.name,
                 "watched": being_watched,
                 "dist":    round(target_distance, 3),
-                "src":     source_cam,
                 "cmd":     [round(final_accel, 2), round(final_steer, 2)],
                 "road":    len(road_people),
-                "rear":    len(driver_people),
                 "fps":     round(fps, 1),
             })
 
-            # ── Debug ─────────────────────────────────────────────────
             print(
                 f"[{fsm.state.name:8s}] "
-                f"road:{len(road_people)} rear:{len(driver_people)} "
-                f"src={source_cam} watched={being_watched} "
+                f"road:{len(road_people)} watched={being_watched} "
                 f"cmd=({final_accel:.2f},{final_steer:+.2f}) "
                 f"dist={target_distance:.3f} {elapsed*1000:.0f}ms"
             )
