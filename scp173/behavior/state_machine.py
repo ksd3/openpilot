@@ -48,9 +48,11 @@ class SCP173StateMachine:
         if self.state == State.IDLE:
             if person_detected and not being_watched:
                 self.state = State.STALKING
-            return (0.0, 0.0)
+                # Fall through to STALKING logic immediately
+            else:
+                return (0.0, 0.0)
 
-        elif self.state == State.STALKING:
+        if self.state == State.STALKING:
             if being_watched:
                 self.state = State.FROZEN
                 self._last_watched_time = t
