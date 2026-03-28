@@ -24,19 +24,19 @@ from msgq.visionipc import VisionIpcClient, VisionStreamType
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.params import Params
 
-from scp173.perception.detector_blazeface import BlazeFaceDetector
+from scp173.perception.detector_yunet import YuNetDetector
 from scp173.behavior.state_machine import SCP173StateMachine, State
 from scp173.control.motor_controller import MotorController
 
-BLAZE_MODEL = "/data/openpilot/scp173/models/blaze_face_short_range.tflite"
+YUNET_MODEL = "/data/openpilot/scp173/models/face_detection_yunet_2023mar.onnx"
 
 
-def yuv_to_rgb(buf) -> np.ndarray:
+def yuv_to_bgr(buf) -> np.ndarray:
     h, w, stride = buf.height, buf.width, buf.stride
     nv12_size = h * 3 // 2 * stride
     raw = np.frombuffer(buf.data, dtype=np.uint8, count=nv12_size)
     nv12 = raw.reshape((h * 3 // 2, stride))
-    return cv2.cvtColor(np.ascontiguousarray(nv12[:, :w]), cv2.COLOR_YUV2RGB_NV12)
+    return cv2.cvtColor(np.ascontiguousarray(nv12[:, :w]), cv2.COLOR_YUV2BGR_NV12)
 
 
 def connect_camera(stream_type: VisionStreamType) -> VisionIpcClient:
@@ -89,8 +89,8 @@ def main():
             time.sleep(2)
     threading.Thread(target=keep_joystick_mode, daemon=True).start()
 
-    print("SCP-173 online. Loading BlazeFace...")
-    detector = BlazeFaceDetector(BLAZE_MODEL, confidence=0.5)
+    print("SCP-173 online. Loading YuNet...")
+    detector = YuNetDetector(YUNET_MODEL, input_size=(320, 240), conf_threshold=0.3)
     motor = MotorController()
     publisher = CommandPublisher(motor)
     fsm = SCP173StateMachine()
@@ -124,11 +124,11 @@ def main():
                 publisher.update(0.0, 0.0)
                 continue
 
-            frame_rgb = yuv_to_rgb(buf)
-            h, w = frame_rgb.shape[:2]
+            frame_bgr = yuv_to_bgr(buf)
+            h, w = frame_bgr.shape[:2]
 
-            # BlazeFace detection (~24ms)
-            faces, being_watched, bearing = detector.detect(frame_rgb)
+            # YuNet face detection (~31ms at 320x240)
+            faces, being_watched, bearing = detector.detect(frame_bgr)
 
             if bearing is not None:
                 last_known_bearing = bearing
