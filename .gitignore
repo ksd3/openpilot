@@ -90,3 +90,4 @@ TASK.md
 # Optional local-only (not required in-repo)
 Depth-Anything-V2/
 scp173-env/
+scp173-export-env/
