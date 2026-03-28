@@ -160,10 +160,11 @@ def main():
     being_watched  = False
     smooth_bearing = 0.0
     smooth_accel   = 0.0
-    BEARING_ALPHA  = 0.4   # 0 = ignore new, 1 = fully trust new reading
-    ACCEL_ALPHA    = 0.3
+    BEARING_ALPHA  = 0.15  # heavy smoothing — takes ~5 consistent frames to fully turn
+    ACCEL_ALPHA    = 0.2
     MAX_ACCEL      = 0.2
-    MAX_STEER_CMD  = 0.3
+    MAX_STEER_CMD  = 0.25
+    MAX_STEER_RATE = 0.1   # max steer change per frame
     fps            = 0.0
 
     try:
@@ -203,9 +204,13 @@ def main():
                 person_detected, being_watched, target_bearing, target_distance
             )
 
-            # ── Smoothing ────────────────────────────────────────────
+            # ── Smoothing + rate limiting ────────────────────────────
             if raw_accel > 0:
-                smooth_bearing = smooth_bearing * (1 - BEARING_ALPHA) + raw_steer * BEARING_ALPHA
+                new_bearing = smooth_bearing * (1 - BEARING_ALPHA) + raw_steer * BEARING_ALPHA
+                # Rate limit: don't change steer by more than MAX_STEER_RATE per frame
+                delta = new_bearing - smooth_bearing
+                delta = max(-MAX_STEER_RATE, min(MAX_STEER_RATE, delta))
+                smooth_bearing += delta
                 smooth_accel = smooth_accel * (1 - ACCEL_ALPHA) + raw_accel * ACCEL_ALPHA
             else:
                 # Stopping — decay quickly
