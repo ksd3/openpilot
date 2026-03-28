@@ -209,6 +209,15 @@ def main():
                 final_accel = raw_accel
                 final_steer = raw_steer
 
+            # Hard safety stop: if depth says something is very close, kill throttle
+            if depth_map is not None and final_accel > 0:
+                obstacle_mask = depth_est.get_obstacle_map(depth_map, near_threshold=0.15)
+                # Check center third of the obstacle map (directly ahead)
+                center_w = obstacle_mask.shape[1] // 3
+                center_region = obstacle_mask[:, center_w:center_w * 2]
+                if np.mean(center_region) > 0.4:  # >40% of center is blocked
+                    final_accel = 0.0
+
             publisher.update(final_accel, final_steer)
 
             # ── Stream frame to viewer ────────────────────────────────
