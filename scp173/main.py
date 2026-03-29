@@ -64,12 +64,14 @@ class SoundPlayer:
         return self._proc is not None and self._proc.poll() is None
 
 
-def yuv_to_bgr(buf) -> np.ndarray:
+def yuv_to_bgr_small(buf, target_w: int = 320, target_h: int = 240) -> np.ndarray:
+    """Convert NV12 to BGR at reduced resolution. ~2ms vs ~100ms for full res."""
     h, w, stride = buf.height, buf.width, buf.stride
-    nv12_size = h * 3 // 2 * stride
-    raw = np.frombuffer(buf.data, dtype=np.uint8, count=nv12_size)
-    nv12 = raw.reshape((h * 3 // 2, stride))
-    return cv2.cvtColor(np.ascontiguousarray(nv12[:, :w]), cv2.COLOR_YUV2BGR_NV12)
+    raw = np.frombuffer(buf.data, dtype=np.uint8, count=h * 3 // 2 * stride)
+    nv12 = raw.reshape((h * 3 // 2, stride))[:, :w]
+    y_small = cv2.resize(nv12[:h, :], (target_w, target_h))
+    uv_small = cv2.resize(nv12[h:, :], (target_w, target_h // 2))
+    return cv2.cvtColor(np.vstack([y_small, uv_small]), cv2.COLOR_YUV2BGR_NV12)
 
 
 def connect_camera(stream_type: VisionStreamType) -> VisionIpcClient:
@@ -112,8 +114,9 @@ class CommandPublisher:
 
 
 def main():
-    import sys
-    mute = "--mute" in sys.argv
+    import sys, os
+    mute = "--mute" in sys.argv or os.environ.get("MUTE") == "1"
+    print(f"Sound: {'OFF' if mute else 'ON'}")
     params = Params()
     # Set JoystickDebugMode to stop controlsd, then kill joystickd
     # We publish carControl directly with enabled=True
@@ -174,16 +177,28 @@ def main():
         while True:
             t0 = time.monotonic()
 
+            t_recv = time.monotonic()
             buf = road_cam.recv()
             if buf is None:
                 publisher.update(0.0, 0.0)
                 continue
+            t_got_frame = time.monotonic()
 
-            frame_bgr = yuv_to_bgr(buf)
+            frame_bgr = yuv_to_bgr_small(buf, 320, 240)
+            t_cvt = time.monotonic()
+
             h, w = frame_bgr.shape[:2]
 
             # YuNet face detection (~31ms at 320x240)
             faces, being_watched, bearing = detector.detect(frame_bgr)
+            t_detect = time.monotonic()
+
+            if tick % 20 == 0:
+                log.info("TIMING recv=%.0fms cvt=%.0fms detect=%.0fms frame=%dx%d",
+                    (t_got_frame - t_recv) * 1000,
+                    (t_cvt - t_got_frame) * 1000,
+                    (t_detect - t_cvt) * 1000,
+                    w, h)
 
             if bearing is not None:
                 last_known_bearing = bearing
@@ -246,6 +261,11 @@ def main():
 
             final_accel = min(smooth_accel, MAX_ACCEL)
             final_steer = max(-MAX_STEER_CMD, min(MAX_STEER_CMD, smooth_bearing))
+
+            # IDLE: slowly rotate to scan for people
+            if cur_state == State.IDLE and not being_watched:
+                final_accel = 0.0
+                final_steer = 0.1
 
             # Stuck detection: if commanding forward but not moving, back up
             sm.update(0)
