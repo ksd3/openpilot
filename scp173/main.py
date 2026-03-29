@@ -7,6 +7,7 @@ Face disappears = they looked away = MOVE toward last known position.
 """
 
 import logging
+import subprocess
 import threading
 import time
 import numpy as np
@@ -29,6 +30,37 @@ from scp173.behavior.state_machine import SCP173StateMachine, State
 from scp173.control.motor_controller import MotorController
 
 YUNET_MODEL = "/data/openpilot/scp173/models/face_detection_yunet_2023mar.onnx"
+SOUND_STARTUP = "/data/openpilot/scp173/sounds/bewareilive.wav"
+SOUND_CHASE = "/data/openpilot/scp173/sounds/aaaaaaa.wav"
+SOUND_RUN = "/data/openpilot/scp173/sounds/run_coward.wav"
+
+
+class SoundPlayer:
+    """Non-blocking audio player using aplay."""
+
+    def __init__(self):
+        self._proc = None
+
+    def play(self, path: str):
+        """Play a sound, stopping any currently playing sound."""
+        self.stop()
+        try:
+            self._proc = subprocess.Popen(
+                ["aplay", path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
+
+    def stop(self):
+        if self._proc and self._proc.poll() is None:
+            self._proc.kill()
+            self._proc = None
+
+    @property
+    def is_playing(self):
+        return self._proc is not None and self._proc.poll() is None
 
 
 def yuv_to_bgr(buf) -> np.ndarray:
@@ -79,20 +111,25 @@ class CommandPublisher:
 
 
 def main():
+    import sys
+    mute = "--mute" in sys.argv
     params = Params()
     # Set JoystickDebugMode to stop controlsd, then kill joystickd
     # We publish carControl directly with enabled=True
     params.put_bool("JoystickDebugMode", True)
-    import subprocess, time as _t
-    _t.sleep(2)  # let manager swap controlsd → joystickd
+    time.sleep(2)  # let manager swap controlsd → joystickd
     subprocess.run(["pkill", "-f", "joystickd"], capture_output=True)
-    _t.sleep(0.5)
+    time.sleep(0.5)
     print("Killed joystickd — we own carControl now")
 
     # Start sending commands IMMEDIATELY to prevent selfdrived from disengaging
     motor = MotorController()
     publisher = CommandPublisher(motor)
     print("Command publisher started (100Hz keepalive)")
+
+    sound = SoundPlayer() if not mute else None
+    if sound:
+        sound.play(SOUND_STARTUP)
 
     print("SCP-173 online. Loading YuNet...")
     detector = YuNetDetector(YUNET_MODEL, input_size=(320, 240), conf_threshold=0.3)
@@ -108,8 +145,8 @@ def main():
     BEARING_ALPHA = 0.3
     ACCEL_ALPHA = 0.3
     MAX_ACCEL = 0.2
-    MAX_STEER_CMD = 0.3
-    STEER_RATE_LIMIT = 0.15
+    MAX_STEER_CMD = 0.15   # gentle corrections only
+    STEER_RATE_LIMIT = 0.05  # very smooth steering changes
 
     # Last known bearing for when face disappears
     last_known_bearing = 0.0
@@ -117,6 +154,7 @@ def main():
 
     fps = 0.0
     tick = 0
+    prev_state = State.IDLE
 
     try:
         while True:
@@ -146,17 +184,34 @@ def main():
             if faces:
                 largest = max(faces, key=lambda f: (f[2] - f[0]) * (f[3] - f[1]))
                 face_w = (largest[2] - largest[0]) / w
-                target_distance = max(0.01, 1.0 - face_w * 3)  # faces are smaller than bodies
+                target_distance = max(0.01, 1.0 - face_w * 3)
             else:
                 target_distance = 0.8
 
-            # Use last known bearing when face disappears (they turned away)
-            target_bearing = last_known_bearing if person_detected else 0.0
+            # Only steer when face is visible NOW — go straight when lost
+            if bearing is not None:
+                target_bearing = bearing
+            else:
+                target_bearing = 0.0  # go straight, don't chase stale bearing
 
             # State machine
             raw_accel, raw_steer = fsm.update(
                 person_detected, being_watched, target_bearing, target_distance
             )
+
+            # Sound triggers on state transitions
+            cur_state = fsm.state
+            if sound:
+                if cur_state != prev_state:
+                    if cur_state == State.STALKING and prev_state == State.FROZEN:
+                        sound.play(SOUND_RUN)
+                    elif cur_state == State.STALKING and prev_state == State.IDLE:
+                        sound.play(SOUND_CHASE)
+                elif cur_state == State.STALKING and not sound.is_playing:
+                    sound.play(SOUND_CHASE)
+                elif cur_state != State.STALKING:
+                    sound.stop()
+            prev_state = cur_state
 
             # Smoothing + rate limiting
             if raw_accel > 0:
