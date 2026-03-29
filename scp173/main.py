@@ -124,8 +124,12 @@ def main():
     time.sleep(2)  # let manager swap controlsd → joystickd
     subprocess.run(["pkill", "-f", "joystickd"], capture_output=True)
     subprocess.run(["pkill", "-f", "soundd"], capture_output=True)
+    subprocess.run(["pkill", "-f", "loggerd"], capture_output=True)
+    subprocess.run(["pkill", "-f", "encoderd"], capture_output=True)
+    subprocess.run(["pkill", "-f", "uploader"], capture_output=True)
+    subprocess.run(["pkill", "-f", "proclogd"], capture_output=True)
     time.sleep(0.5)
-    print("Killed joystickd + soundd — we own carControl and audio")
+    print("Killed joystickd + soundd + logging — we own carControl and audio")
 
     # Start sending commands IMMEDIATELY to prevent selfdrived from disengaging
     motor = MotorController()
@@ -261,7 +265,14 @@ def main():
                 smooth_bearing *= 0.5
                 smooth_accel *= 0.3
 
-            final_accel = min(smooth_accel, MAX_ACCEL)
+            # Speed varies with distance — charge when far, creep when close
+            if target_distance > 0.7:
+                speed_cap = 0.35  # far — aggressive
+            elif target_distance > 0.4:
+                speed_cap = 0.2   # medium
+            else:
+                speed_cap = 0.1   # close — stalking
+            final_accel = min(smooth_accel, speed_cap)
             final_steer = max(-MAX_STEER_CMD, min(MAX_STEER_CMD, smooth_bearing))
 
             # IDLE: slowly rotate only if we've never found anyone (initial scan)
