@@ -32,6 +32,9 @@ from cereal import messaging as cereal_messaging
 from scp173.perception.detector_yunet import YuNetDetector
 from scp173.behavior.state_machine import SCP173StateMachine, State
 from scp173.control.motor_controller import MotorController
+from scp173.navigation.occupancy_grid import OccupancyGrid
+from scp173.navigation import astar
+from scp173.navigation.path_follower import PathFollower
 
 YUNET_MODEL = "/data/openpilot/scp173/models/face_detection_yunet_2023mar.onnx"
 KILLS_DIR = "/data/openpilot/scp173/kills"
@@ -221,6 +224,12 @@ def main():
     if sound:
         sound.play(SOUND_STARTUP)
 
+    # Navigation
+    nav_grid = OccupancyGrid(size=200, resolution=0.1)
+    nav_follower = PathFollower(lookahead_distance=0.5)
+    nav_replan_interval = 5  # replan every N frames
+    nav_frame_count = 0
+
     print("SCP-173 online. Loading YuNet...")
     detector = YuNetDetector(YUNET_MODEL, input_size=(320, 240), conf_threshold=0.3)
     fsm = SCP173StateMachine()
@@ -266,6 +275,8 @@ def main():
     pos_y = 0.0   # meters right from start
     heading = 0.0  # radians, 0 = initial forward
     last_pose_time = time.monotonic()
+    prev_pos_x = 0.0
+    prev_pos_y = 0.0
 
     try:
         while True:
@@ -326,19 +337,30 @@ def main():
             else:
                 target_distance = 0.8
 
-            # Steering: face visible → track face, face gone → navigate to world position
+            # Steering: face visible → track face, face gone → A* path to world position
             if bearing is not None:
                 target_bearing = bearing
+                nav_follower.set_path([])  # clear path when we can see the face
             elif has_person_position and person_detected:
-                # Compute bearing from current position to person's world position
-                dx = person_world_x - pos_x
-                dy = person_world_y - pos_y
-                target_angle = math.atan2(dy, dx)
-                angle_diff = target_angle - heading
-                # Normalize to [-pi, pi]
-                angle_diff = (angle_diff + math.pi) % (2 * math.pi) - math.pi
-                # Convert to [-1, 1] range
-                target_bearing = max(-1.0, min(1.0, angle_diff / WIDE_CAM_HALF_FOV))
+                # Plan/follow path using A*
+                nav_frame_count += 1
+                if nav_frame_count % nav_replan_interval == 0 or not nav_follower.has_path:
+                    path = astar.plan(nav_grid, (pos_x, pos_y), (person_world_x, person_world_y))
+                    if path:
+                        nav_follower.set_path(path)
+                        log.info("A* path: %d waypoints, grid obstacles=%d explored=%d",
+                                 len(path), nav_grid.get_obstacle_count(), nav_grid.get_explored_count())
+
+                if nav_follower.has_path:
+                    target_bearing = nav_follower.get_steer(pos_x, pos_y, heading, WIDE_CAM_HALF_FOV)
+                else:
+                    # Fallback: direct bearing if A* fails
+                    dx = person_world_x - pos_x
+                    dy = person_world_y - pos_y
+                    target_angle = math.atan2(dy, dx)
+                    angle_diff = target_angle - heading
+                    angle_diff = (angle_diff + math.pi) % (2 * math.pi) - math.pi
+                    target_bearing = max(-1.0, min(1.0, angle_diff / WIDE_CAM_HALF_FOV))
             else:
                 target_bearing = 0.0
 
@@ -432,6 +454,13 @@ def main():
             pos_x += (vx * np.cos(heading) - vy * np.sin(heading)) * dt
             pos_y += (vx * np.sin(heading) + vy * np.cos(heading)) * dt
 
+            # Update occupancy grid — mark robot trail as free
+            dist_moved = math.sqrt((pos_x - prev_pos_x)**2 + (pos_y - prev_pos_y)**2)
+            if dist_moved > 0.05:  # moved at least 5cm
+                nav_grid.mark_free_along_path(prev_pos_x, prev_pos_y, pos_x, pos_y)
+                prev_pos_x = pos_x
+                prev_pos_y = pos_y
+
             # Track commanding vs actual movement (only when driving forward, not spinning)
             if final_accel > 0.05:
                 last_commanding_time = now
@@ -453,8 +482,13 @@ def main():
                 if bearing is not None:
                     turn_until = 0.0
             elif recently_commanding and not_actually_moving and now > (backup_until + 1.0):
-                # Stuck! Start backup sequence
-                # Turn opposite to where we were steering
+                # Stuck! Mark obstacle on map in the direction we were heading
+                obstacle_dist = 0.3  # obstacle is ~30cm ahead
+                obs_x = pos_x + obstacle_dist * math.cos(heading)
+                obs_y = pos_y + obstacle_dist * math.sin(heading)
+                nav_grid.mark_obstacle(obs_x, obs_y, confidence=0.4)
+                nav_follower.set_path([])  # force replan
+                # Start backup sequence
                 turn_direction = -1.0 if smooth_bearing > 0 else 1.0
                 backup_until = now + 0.8
                 turn_until = now + 2.5  # back up 0.8s then turn ~1.7s
