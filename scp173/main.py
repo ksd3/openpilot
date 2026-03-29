@@ -140,8 +140,8 @@ def main():
     detector = YuNetDetector(YUNET_MODEL, input_size=(320, 240), conf_threshold=0.3)
     fsm = SCP173StateMachine()
 
-    print("Connecting to road camera...")
-    road_cam = connect_camera(VisionStreamType.VISION_STREAM_ROAD)
+    print("Connecting to wide camera...")
+    road_cam = connect_camera(VisionStreamType.VISION_STREAM_WIDE_ROAD)
     sm = cereal_messaging.SubMaster(['carState', 'livePose'])
     print("Camera connected. Beginning containment breach...")
 
@@ -156,7 +156,9 @@ def main():
 
     # Last known bearing for when face disappears
     last_known_bearing = 0.0
-    frames_since_face = 0
+    last_face_time = 0.0  # time-based, not frame-based
+    ever_seen_someone = False
+    HUNT_PERSISTENCE = 30.0  # keep hunting for 30 seconds after last seeing someone
 
     fps = 0.0
     tick = 0
@@ -202,12 +204,12 @@ def main():
 
             if bearing is not None:
                 last_known_bearing = bearing
-                frames_since_face = 0
-            else:
-                frames_since_face += 1
+                last_face_time = now
+                ever_seen_someone = True
 
-            # Person detected = face seen recently (within last 10 frames)
-            person_detected = frames_since_face < 10
+            # Person detected = face seen recently (within persistence window)
+            time_since_face = now - last_face_time if last_face_time > 0 else 999
+            person_detected = time_since_face < HUNT_PERSISTENCE
 
             # Distance proxy from face size
             if faces:
@@ -217,13 +219,13 @@ def main():
             else:
                 target_distance = 0.8
 
-            # Steer toward face when visible, briefly chase last known bearing, then go straight
+            # Steer toward face when visible, chase last known bearing when hunting
             if bearing is not None:
                 target_bearing = bearing
-            elif frames_since_face < 5:
-                target_bearing = last_known_bearing  # chase briefly after face disappears
+            elif time_since_face < 3.0:
+                target_bearing = last_known_bearing
             else:
-                target_bearing = 0.0  # go straight after a few frames
+                target_bearing = 0.0
 
             # State machine
             raw_accel, raw_steer = fsm.update(
@@ -262,10 +264,10 @@ def main():
             final_accel = min(smooth_accel, MAX_ACCEL)
             final_steer = max(-MAX_STEER_CMD, min(MAX_STEER_CMD, smooth_bearing))
 
-            # IDLE: slowly rotate to scan for people
-            if cur_state == State.IDLE and not being_watched:
+            # IDLE: slowly rotate only if we've never found anyone (initial scan)
+            if cur_state == State.IDLE and not ever_seen_someone and len(faces) == 0:
                 final_accel = 0.0
-                final_steer = 0.1
+                final_steer = 0.05
 
             # Stuck detection: if commanding forward but not moving, back up
             sm.update(0)
@@ -291,14 +293,14 @@ def main():
             pos_x += (vx * np.cos(heading) - vy * np.sin(heading)) * dt
             pos_y += (vx * np.sin(heading) + vy * np.cos(heading)) * dt
 
-            # Track commanding vs actual movement
+            # Track commanding vs actual movement (only when driving forward, not spinning)
             if final_accel > 0.05:
                 last_commanding_time = now
             if world_speed > 0.05:
                 last_actually_moving_time = now
 
-            recently_commanding = (now - last_commanding_time) < 2.0
-            not_actually_moving = (now - last_actually_moving_time) > 1.5
+            recently_commanding = (now - last_commanding_time) < 1.0
+            not_actually_moving = (now - last_actually_moving_time) > 2.0
 
             if now < backup_until:
                 # Phase 1: back up

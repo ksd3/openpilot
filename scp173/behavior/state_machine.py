@@ -46,7 +46,11 @@ class SCP173StateMachine:
         t = now if now is not None else time.monotonic()
 
         if self.state == State.IDLE:
-            if person_detected and not being_watched:
+            if person_detected and being_watched:
+                self.state = State.FROZEN
+                self._last_watched_time = t
+                return (0.0, 0.0)
+            elif person_detected and not being_watched:
                 self.state = State.STALKING
                 # Fall through to STALKING logic immediately
             else:
