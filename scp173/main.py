@@ -75,8 +75,8 @@ class SoundPlayer:
         return self._proc is not None and self._proc.poll() is None
 
 
-def take_kill_photo(buf, kill_count: int):
-    """Save full-resolution trophy photo on STRIKE."""
+def take_kill_photo(buf, kill_count: int) -> str | None:
+    """Save full-resolution trophy photo on STRIKE. Returns path or None."""
     try:
         os.makedirs(KILLS_DIR, exist_ok=True)
         h, w, stride = buf.height, buf.width, buf.stride
@@ -84,7 +84,6 @@ def take_kill_photo(buf, kill_count: int):
         nv12 = raw.reshape((h * 3 // 2, stride))[:, :w]
         frame = cv2.cvtColor(np.ascontiguousarray(nv12), cv2.COLOR_YUV2BGR_NV12)
 
-        # Stamp kill info
         text = f"KILL #{kill_count}"
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
         cv2.putText(frame, text, (40, 80), cv2.FONT_HERSHEY_SIMPLEX, 2.5, (0, 0, 255), 6)
@@ -94,8 +93,10 @@ def take_kill_photo(buf, kill_count: int):
         path = os.path.join(KILLS_DIR, f"kill_{kill_count:03d}_{int(time.time())}.jpg")
         cv2.imwrite(path, frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
         log.info("KILL PHOTO saved: %s", path)
+        return path
     except Exception as e:
         log.info("KILL PHOTO failed: %s", e)
+        return None
 
 
 class ScreenFace:
@@ -364,12 +365,17 @@ def main():
                         sound.play(SOUND_RUN if prev_state == State.FROZEN else SOUND_CHASE)
                 elif cur_state == State.STRIKE:
                     kill_count += 1
-                    take_kill_photo(buf, kill_count)
-                    screen.set_face(FACE_STRIKE)
-                    screen.flash(FACE_STRIKE, times=3)
+                    photo_path = take_kill_photo(buf, kill_count)
                     if sound: sound.play(SOUND_STRIKE)
                     log.info("STRIKE #%d at pos=(%.2f,%.2f) person=(%.2f,%.2f)",
                              kill_count, pos_x, pos_y, person_world_x, person_world_y)
+                    # Show kill photo on screen (runs in background)
+                    if photo_path:
+                        subprocess.Popen([
+                            "/usr/local/venv/bin/python",
+                            "/data/openpilot/scp173/control/show_photo.py",
+                            photo_path, "3"
+                        ], env={**os.environ, "PYTHONPATH": "/data/openpilot"})
                 elif cur_state == State.IDLE:
                     screen.set_face(FACE_STALKING)
                     if sound: sound.stop()
