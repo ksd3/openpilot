@@ -34,6 +34,7 @@ from scp173.behavior.state_machine import SCP173StateMachine, State
 from scp173.control.motor_controller import MotorController
 
 YUNET_MODEL = "/data/openpilot/scp173/models/face_detection_yunet_2023mar.onnx"
+KILLS_DIR = "/data/openpilot/scp173/kills"
 SOUND_STARTUP = "/data/openpilot/scp173/sounds/bewareilive.wav"
 SOUND_CHASE = "/data/openpilot/scp173/sounds/aaaaaaa.wav"
 SOUND_RUN = "/data/openpilot/scp173/sounds/run_coward.wav"
@@ -72,6 +73,29 @@ class SoundPlayer:
     @property
     def is_playing(self):
         return self._proc is not None and self._proc.poll() is None
+
+
+def take_kill_photo(buf, kill_count: int):
+    """Save full-resolution trophy photo on STRIKE."""
+    try:
+        os.makedirs(KILLS_DIR, exist_ok=True)
+        h, w, stride = buf.height, buf.width, buf.stride
+        raw = np.frombuffer(buf.data, dtype=np.uint8, count=h * 3 // 2 * stride)
+        nv12 = raw.reshape((h * 3 // 2, stride))[:, :w]
+        frame = cv2.cvtColor(np.ascontiguousarray(nv12), cv2.COLOR_YUV2BGR_NV12)
+
+        # Stamp kill info
+        text = f"KILL #{kill_count}"
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        cv2.putText(frame, text, (40, 80), cv2.FONT_HERSHEY_SIMPLEX, 2.5, (0, 0, 255), 6)
+        cv2.putText(frame, ts, (40, 150), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
+        cv2.putText(frame, "SCP-173", (40, h - 40), cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 0, 255), 5)
+
+        path = os.path.join(KILLS_DIR, f"kill_{kill_count:03d}_{int(time.time())}.jpg")
+        cv2.imwrite(path, frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        log.info("KILL PHOTO saved: %s", path)
+    except Exception as e:
+        log.info("KILL PHOTO failed: %s", e)
 
 
 class ScreenFace:
@@ -229,6 +253,7 @@ def main():
     fps = 0.0
     tick = 0
     prev_state = State.IDLE
+    kill_count = 0
     last_commanding_time = 0.0
     last_actually_moving_time = 0.0
     backup_until = 0.0
@@ -338,9 +363,13 @@ def main():
                     if sound:
                         sound.play(SOUND_RUN if prev_state == State.FROZEN else SOUND_CHASE)
                 elif cur_state == State.STRIKE:
+                    kill_count += 1
+                    take_kill_photo(buf, kill_count)
                     screen.set_face(FACE_STRIKE)
                     screen.flash(FACE_STRIKE, times=3)
                     if sound: sound.play(SOUND_STRIKE)
+                    log.info("STRIKE #%d at pos=(%.2f,%.2f) person=(%.2f,%.2f)",
+                             kill_count, pos_x, pos_y, person_world_x, person_world_y)
                 elif cur_state == State.IDLE:
                     screen.set_face(FACE_STALKING)
                     if sound: sound.stop()
