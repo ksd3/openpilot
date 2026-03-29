@@ -7,6 +7,7 @@ Face disappears = they looked away = MOVE toward last known position.
 """
 
 import logging
+import math
 import subprocess
 import threading
 import time
@@ -115,6 +116,8 @@ class CommandPublisher:
 
 def main():
     import sys, os
+    os.environ["SENTRY_DSN"] = ""  # disable sentry error reporting
+    os.environ["PYTHONWARNINGS"] = "ignore"
     mute = "--mute" in sys.argv or os.environ.get("MUTE") == "1"
     print(f"Sound: {'OFF' if mute else 'ON'}")
     params = Params()
@@ -152,17 +155,23 @@ def main():
     # Smoothing
     smooth_bearing = 0.0
     smooth_accel = 0.0
-    BEARING_ALPHA = 0.3
-    ACCEL_ALPHA = 0.3
-    MAX_ACCEL = 0.2
-    MAX_STEER_CMD = 0.15   # gentle corrections only
-    STEER_RATE_LIMIT = 0.05  # very smooth steering changes
+    BEARING_ALPHA = 0.4
+    ACCEL_ALPHA = 0.4
+    MAX_ACCEL = 0.3
+    MAX_STEER_CMD = 0.25
+    STEER_RATE_LIMIT = 0.1
 
-    # Last known bearing for when face disappears
+    # Person world-space memory
     last_known_bearing = 0.0
-    last_face_time = 0.0  # time-based, not frame-based
+    last_face_time = 0.0
     ever_seen_someone = False
-    HUNT_PERSISTENCE = 30.0  # keep hunting for 30 seconds after last seeing someone
+    HUNT_PERSISTENCE = 30.0
+    WIDE_CAM_HALF_FOV = math.radians(60)  # wide camera ~120° FOV
+    FACE_REAL_WIDTH = 0.17  # meters
+    FOCAL_SCALED = 567.0 * (320.0 / 1928.0)  # wide camera focal length at 320px
+    person_world_x = 0.0
+    person_world_y = 0.0
+    has_person_position = False
 
     fps = 0.0
     tick = 0
@@ -211,23 +220,46 @@ def main():
                 last_face_time = now
                 ever_seen_someone = True
 
+                # Compute person's world position from bearing + face size
+                largest = max(faces, key=lambda f: (f[2] - f[0]) * (f[3] - f[1]))
+                face_w_px = largest[2] - largest[0]
+                if face_w_px > 1:
+                    distance_m = max(0.3, min(5.0, (FACE_REAL_WIDTH * FOCAL_SCALED) / face_w_px))
+                else:
+                    distance_m = 2.0
+                person_angle = heading + bearing * WIDE_CAM_HALF_FOV
+                person_world_x = pos_x + distance_m * math.cos(person_angle)
+                person_world_y = pos_y + distance_m * math.sin(person_angle)
+                has_person_position = True
+
             # Person detected = face seen recently (within persistence window)
             time_since_face = now - last_face_time if last_face_time > 0 else 999
             person_detected = time_since_face < HUNT_PERSISTENCE
 
-            # Distance proxy from face size
-            if faces:
-                largest = max(faces, key=lambda f: (f[2] - f[0]) * (f[3] - f[1]))
+            # Distance — use world-space distance if tracking, otherwise face size proxy
+            if has_person_position and person_detected:
+                dx = person_world_x - pos_x
+                dy = person_world_y - pos_y
+                target_distance = max(0.01, min(1.0, math.sqrt(dx**2 + dy**2) / 3.0))
+            elif faces:
                 face_w = (largest[2] - largest[0]) / w
                 target_distance = max(0.01, 1.0 - face_w * 3)
             else:
                 target_distance = 0.8
 
-            # Steer toward face when visible, chase last known bearing when hunting
+            # Steering: face visible → track face, face gone → navigate to world position
             if bearing is not None:
                 target_bearing = bearing
-            elif time_since_face < 3.0:
-                target_bearing = last_known_bearing
+            elif has_person_position and person_detected:
+                # Compute bearing from current position to person's world position
+                dx = person_world_x - pos_x
+                dy = person_world_y - pos_y
+                target_angle = math.atan2(dy, dx)
+                angle_diff = target_angle - heading
+                # Normalize to [-pi, pi]
+                angle_diff = (angle_diff + math.pi) % (2 * math.pi) - math.pi
+                # Convert to [-1, 1] range
+                target_bearing = max(-1.0, min(1.0, angle_diff / WIDE_CAM_HALF_FOV))
             else:
                 target_bearing = 0.0
 
@@ -267,11 +299,11 @@ def main():
 
             # Speed varies with distance — charge when far, creep when close
             if target_distance > 0.7:
-                speed_cap = 0.35  # far — aggressive
+                speed_cap = 0.45  # far — aggressive
             elif target_distance > 0.4:
-                speed_cap = 0.2   # medium
+                speed_cap = 0.3   # medium
             else:
-                speed_cap = 0.1   # close — stalking
+                speed_cap = 0.15  # close — stalking
             final_accel = min(smooth_accel, speed_cap)
             final_steer = max(-MAX_STEER_CMD, min(MAX_STEER_CMD, smooth_bearing))
 
@@ -339,10 +371,11 @@ def main():
 
             log.info(
                 "state=%s faces=%d watched=%s bearing=%.2f dist=%.3f "
-                "accel=%.2f steer=%+.2f pos=(%.2f,%.2f) spd=%.2f fps=%.0f %dms",
+                "accel=%.2f steer=%+.2f robot=(%.2f,%.2f) person=(%.2f,%.2f) spd=%.2f fps=%.0f %dms",
                 fsm.state.name, len(faces), being_watched,
                 target_bearing, target_distance,
-                final_accel, final_steer, pos_x, pos_y, world_speed,
+                final_accel, final_steer, pos_x, pos_y,
+                person_world_x, person_world_y, world_speed,
                 fps, elapsed * 1000,
             )
 
