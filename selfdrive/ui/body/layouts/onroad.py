@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import glob
-import os
-import subprocess
 import time
 
 import pyray as rl
@@ -15,8 +12,6 @@ from openpilot.selfdrive.ui.body.widgets.pairing_dialog import BodyPairingScreen
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.selfdrive.ui.body.animations import FaceAnimator, ASLEEP, INQUISITIVE, NORMAL, SLEEPY
 from opendbc.car.body.values import CAR
-
-KILLS_DIR = "/data/openpilot/scp173/kills"
 
 GRID_COLS = 16
 GRID_ROWS = 8
@@ -44,27 +39,12 @@ class BodyLayout(Widget):
     self.pairing_button = Button("CONNECT", font_size=PAIR_BTN_FONT_SIZE, font_weight=FontWeight.BOLD,
                         click_callback=lambda: gui_app.push_widget(BodyPairingScreen()),
                         button_style=ButtonStyle.ACTION)
-    self.kills_button = Button("KILLS", font_size=PAIR_BTN_FONT_SIZE, font_weight=FontWeight.BOLD,
-                        click_callback=self._launch_gallery,
-                        button_style=ButtonStyle.ACTION)
 
   def set_settings_callback(self, callback):
     pass
 
   def is_swiping_left(self) -> bool:
     return False
-
-  def _launch_gallery(self):
-    kills = glob.glob(os.path.join(KILLS_DIR, "kill_*.jpg"))
-    if kills:
-      subprocess.Popen([
-        "/usr/local/venv/bin/python",
-        "/data/openpilot/scp173/control/show_photo.py",
-        "--gallery", "4"
-      ], env={**os.environ, "PYTHONPATH": "/data/openpilot"})
-
-  def _get_kill_count(self) -> int:
-    return len(glob.glob(os.path.join(KILLS_DIR, "kill_*.jpg")))
 
   def draw_dot_grid(self, rect: rl.Rectangle, dots: list[tuple[int, int]], color: rl.Color | None = None):
     if color is None:
@@ -82,18 +62,6 @@ class BodyLayout(Widget):
       x = int(offset_x + col * spacing)
       y = int(offset_y + row * spacing)
       rl.draw_circle(x, y, RADIUS, color)
-
-  def _draw_kills_button(self, rect: rl.Rectangle):
-    kill_count = self._get_kill_count()
-    if kill_count == 0:
-      return
-    text = f"KILLS: {kill_count}"
-    text_size = measure_text_cached(self._font_bold, text, PAIR_BTN_FONT_SIZE)
-    btn_w = int(text_size.x + 200)
-    btn_h = 200
-    btn_x = int(rect.x + PAIR_BTN_MARGIN)
-    btn_y = int(rect.y + rect.height - btn_h - PAIR_BTN_MARGIN)
-    self.kills_button.render(rl.Rectangle(btn_x, btn_y, btn_w, btn_h))
 
   def _draw_pair_button(self, rect: rl.Rectangle):
     text = tr(tr_noop("CONNECT"))
@@ -162,7 +130,6 @@ class BodyLayout(Widget):
       remove_set = set(animation.right_turn_remove)
       dots = [d for d in dots if d not in remove_set]
     self.draw_dot_grid(rect, dots)
-    self._draw_kills_button(rect)
     if gui_app.big_ui():
       if ui_state.joystick_debug_mode:
         for widget in gui_app._nav_stack:
