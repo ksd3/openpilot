@@ -7,6 +7,7 @@ from openpilot.selfdrive.ui.widgets.offroad_alerts import UpdateAlert, OffroadAl
 from openpilot.selfdrive.ui.widgets.exp_mode_button import ExperimentalModeButton
 from openpilot.selfdrive.ui.widgets.prime import PrimeWidget
 from openpilot.selfdrive.ui.widgets.setup import SetupWidget
+from openpilot.selfdrive.ui.games.doom import DoomGame
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.lib.application import gui_app, FontWeight, MousePos
 from openpilot.system.ui.lib.multilang import tr, trn
@@ -57,8 +58,11 @@ class HomeLayout(Widget):
 
     self._prime_widget = PrimeWidget()
     self._setup_widget = SetupWidget()
+    self._doom_game = DoomGame()
 
     self._exp_mode_button = ExperimentalModeButton()
+    self._doom_btn_rect = rl.Rectangle(0, 0, 0, 80)
+    self._doom_btn_pressed = False
     self._setup_callbacks()
 
   def show_event(self):
@@ -131,8 +135,19 @@ class HomeLayout(Widget):
     self.alert_notif_rect.x = notif_x
     self.alert_notif_rect.y = self.header_rect.y + (self.header_rect.height - 60) // 2
 
+  def _handle_mouse_press(self, mouse_pos: MousePos):
+    if self.current_state == HomeLayoutState.HOME and rl.check_collision_point_rec(mouse_pos, self._doom_btn_rect):
+      self._doom_btn_pressed = True
+
   def _handle_mouse_release(self, mouse_pos: MousePos):
     super()._handle_mouse_release(mouse_pos)
+
+    if self._doom_btn_pressed and rl.check_collision_point_rec(mouse_pos, self._doom_btn_rect):
+      self._doom_btn_pressed = False
+      self._doom_game._init_game()
+      gui_app.push_widget(self._doom_game)
+      return
+    self._doom_btn_pressed = False
 
     if self.update_available and rl.check_collision_point_rec(mouse_pos, self.update_notif_rect):
       self._set_state(HomeLayoutState.UPDATE)
@@ -195,18 +210,40 @@ class HomeLayout(Widget):
 
   def _render_right_column(self):
     exp_height = 125
+    doom_height = 80
     exp_rect = rl.Rectangle(
       self.right_column_rect.x, self.right_column_rect.y, self.right_column_rect.width, exp_height
     )
     self._exp_mode_button.render(exp_rect)
 
+    # DOOM button
+    doom_y = self.right_column_rect.y + exp_height + SPACING
+    self._doom_btn_rect = rl.Rectangle(
+      self.right_column_rect.x, doom_y, self.right_column_rect.width, doom_height
+    )
+    self._render_doom_button()
+
     setup_rect = rl.Rectangle(
       self.right_column_rect.x,
-      self.right_column_rect.y + exp_height + SPACING,
+      doom_y + doom_height + SPACING,
       self.right_column_rect.width,
-      self.right_column_rect.height - exp_height - SPACING,
+      self.right_column_rect.height - exp_height - doom_height - SPACING * 2,
     )
     self._setup_widget.render(setup_rect)
+
+  def _render_doom_button(self):
+    r = self._doom_btn_rect
+    alpha = 0xCC if self._doom_btn_pressed else 0xFF
+    rl.draw_rectangle_gradient_h(int(r.x), int(r.y), int(r.width), int(r.height),
+                                  rl.Color(180, 40, 30, alpha), rl.Color(120, 20, 60, alpha))
+    rl.draw_rectangle_rounded_lines_ex(r, 0.15, 10, 3, rl.Color(0, 0, 0, 180))
+
+    font = gui_app.font(FontWeight.BOLD)
+    text = "PLAY DOOM"
+    text_size = measure_text_cached(font, text, 40)
+    tx = int(r.x + (r.width - text_size.x) / 2)
+    ty = int(r.y + (r.height - text_size.y) / 2)
+    rl.draw_text_ex(font, text, rl.Vector2(tx, ty), 40, 0, rl.WHITE)
 
   def _refresh(self):
     self._version_text = self._get_version_text()
