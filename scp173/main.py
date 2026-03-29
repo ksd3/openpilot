@@ -496,6 +496,13 @@ def main():
 
             publisher.update(final_accel, final_steer)
 
+            # Write state for UI eye tracking
+            try:
+                with open("/tmp/scp173_state", "w") as f:
+                    f.write(f"{cur_state.name} {target_bearing:.3f} {time_since_face:.1f}")
+            except Exception:
+                pass
+
             elapsed = time.monotonic() - t0
             fps = 0.9 * fps + 0.1 * (1.0 / max(elapsed, 0.001))
 

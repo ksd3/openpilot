@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 
 import pyray as rl
@@ -42,6 +43,45 @@ class BodyLayout(Widget):
 
   def set_settings_callback(self, callback):
     pass
+
+  def _read_scp_state(self) -> tuple[str, float, float]:
+    """Read SCP-173 state from shared file. Returns (state, bearing, time_since_face)."""
+    try:
+      with open("/tmp/scp173_state", "r") as f:
+        parts = f.read().strip().split()
+        if len(parts) >= 3:
+          return parts[0], float(parts[1]), float(parts[2])
+    except Exception:
+      pass
+    return "IDLE", 0.0, 999.0
+
+  def _apply_eye_tracking(self, dots: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Shift eye dots based on SCP-173's target bearing."""
+    state, bearing, time_since_face = self._read_scp_state()
+    now = time.monotonic()
+
+    if state == "FROZEN":
+      # Eyes lock onto the person — smooth tracking
+      offset = int(bearing * -3)  # negative because screen left = positive column
+    elif state == "STALKING" and time_since_face < 3.0:
+      # Recently saw someone — eyes look in that direction
+      offset = int(bearing * -3)
+    elif state == "STALKING":
+      # Searching — eyes dart frantically
+      offset = int(3 * math.sin(now * 8))
+    elif state == "IDLE":
+      # Scanning — slow sweep
+      offset = int(2 * math.sin(now * 1.5))
+    else:
+      offset = 0
+
+    # Shift all dots horizontally, clamp to grid
+    shifted = []
+    for r, c in dots:
+      nc = c + offset
+      if 0 <= nc < GRID_COLS:
+        shifted.append((r, nc))
+    return shifted
 
   def is_swiping_left(self) -> bool:
     return False
@@ -129,6 +169,8 @@ class BodyLayout(Widget):
     elif self._turning_right and animation.right_turn_remove:
       remove_set = set(animation.right_turn_remove)
       dots = [d for d in dots if d not in remove_set]
+    # SCP-173 eye tracking — shift dots based on target bearing
+    dots = self._apply_eye_tracking(dots)
     self.draw_dot_grid(rect, dots)
     if gui_app.big_ui():
       if ui_state.joystick_debug_mode:
