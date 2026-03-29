@@ -8,6 +8,8 @@ Face disappears = they looked away = MOVE toward last known position.
 
 import logging
 import math
+import os
+import shutil
 import subprocess
 import threading
 import time
@@ -35,6 +37,13 @@ YUNET_MODEL = "/data/openpilot/scp173/models/face_detection_yunet_2023mar.onnx"
 SOUND_STARTUP = "/data/openpilot/scp173/sounds/bewareilive.wav"
 SOUND_CHASE = "/data/openpilot/scp173/sounds/aaaaaaa.wav"
 SOUND_RUN = "/data/openpilot/scp173/sounds/run_coward.wav"
+SOUND_STRIKE = "/data/openpilot/scp173/sounds/necksnap.wav"
+
+FACE_STALKING = "/data/openpilot/scp173/assets/face_stalking.jpg"
+FACE_FROZEN = "/data/openpilot/scp173/assets/face_frozen.jpg"
+FACE_STRIKE = "/data/openpilot/scp173/assets/face_strike.jpg"
+BG_IMAGE_PATH = "/usr/comma/bg.jpg"
+BG_IMAGE_BACKUP = "/usr/comma/bg_original.jpg"
 
 
 class SoundPlayer:
@@ -63,6 +72,48 @@ class SoundPlayer:
     @property
     def is_playing(self):
         return self._proc is not None and self._proc.poll() is None
+
+
+class ScreenFace:
+    """Swap the comma 4 background image to show SCP-173 face states."""
+
+    def __init__(self):
+        self._current = None
+        # Backup original background
+        if os.path.exists(BG_IMAGE_PATH) and not os.path.exists(BG_IMAGE_BACKUP):
+            try:
+                import shutil
+                shutil.copy2(BG_IMAGE_PATH, BG_IMAGE_BACKUP)
+            except Exception:
+                pass
+
+    def set_face(self, face_path: str):
+        if face_path == self._current:
+            return
+        try:
+            import shutil
+            shutil.copy2(face_path, BG_IMAGE_PATH)
+            # Kill and restart magic.py to reload the image
+            subprocess.run(["pkill", "-f", "magic.py"], capture_output=True)
+            self._current = face_path
+        except Exception:
+            pass
+
+    def flash(self, face_path: str, times: int = 3):
+        """Flash between face and black screen."""
+        for _ in range(times):
+            self.set_brightness(255)
+            time.sleep(0.15)
+            self.set_brightness(0)
+            time.sleep(0.15)
+        self.set_brightness(255)
+
+    def set_brightness(self, val: int):
+        try:
+            with open("/sys/class/backlight/panel0-backlight/brightness", "w") as f:
+                f.write(str(val))
+        except Exception:
+            pass
 
 
 def yuv_to_bgr_small(buf, target_w: int = 320, target_h: int = 240) -> np.ndarray:
@@ -140,6 +191,8 @@ def main():
     print("Command publisher started (100Hz keepalive)")
 
     sound = SoundPlayer() if not mute else None
+    screen = ScreenFace()
+    screen.set_face(FACE_STALKING)
     if sound:
         sound.play(SOUND_STARTUP)
 
@@ -275,16 +328,24 @@ def main():
                 smooth_bearing = last_known_bearing * 0.8  # start aimed at person
                 smooth_accel = 0.0
 
-            if sound:
-                if cur_state != prev_state:
-                    if cur_state == State.STALKING and prev_state == State.FROZEN:
-                        sound.play(SOUND_RUN)
-                    elif cur_state == State.STALKING and prev_state == State.IDLE:
-                        sound.play(SOUND_CHASE)
-                elif cur_state == State.STALKING and not sound.is_playing:
-                    sound.play(SOUND_CHASE)
-                elif cur_state != State.STALKING:
-                    sound.stop()
+            # Sound + screen on state transitions
+            if cur_state != prev_state:
+                if cur_state == State.FROZEN:
+                    screen.set_face(FACE_FROZEN)
+                    if sound: sound.stop()
+                elif cur_state == State.STALKING:
+                    screen.set_face(FACE_STALKING)
+                    if sound:
+                        sound.play(SOUND_RUN if prev_state == State.FROZEN else SOUND_CHASE)
+                elif cur_state == State.STRIKE:
+                    screen.set_face(FACE_STRIKE)
+                    screen.flash(FACE_STRIKE, times=3)
+                    if sound: sound.play(SOUND_STRIKE)
+                elif cur_state == State.IDLE:
+                    screen.set_face(FACE_STALKING)
+                    if sound: sound.stop()
+            elif cur_state == State.STALKING and sound and not sound.is_playing:
+                sound.play(SOUND_CHASE)
             prev_state = cur_state
 
             # Smoothing + rate limiting

@@ -22,7 +22,7 @@ MAX_FACES           = 4
 DEPTH_INPUT_SIZE    = 308
 
 # ── State machine ─────────────────────────────────────────────────────────────
-STRIKE_DISTANCE     = 0.001  # relative depth threshold — stops as close as possible
+STRIKE_DISTANCE     = 0.15   # world-space distance / 3.0 — triggers at ~0.45m
 STRIKE_COOLDOWN     = 3.0    # seconds in STRIKE before returning to IDLE
 FREEZE_GRACE        = 0.3    # seconds of "not watched" before resuming movement
 
