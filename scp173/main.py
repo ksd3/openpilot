@@ -47,7 +47,7 @@ def connect_camera(stream_type: VisionStreamType) -> VisionIpcClient:
 
 
 class CommandPublisher:
-    PUBLISH_HZ = 20
+    PUBLISH_HZ = 100
 
     def __init__(self, motor: MotorController):
         self._motor = motor
@@ -80,19 +80,22 @@ class CommandPublisher:
 
 def main():
     params = Params()
+    # Set JoystickDebugMode to stop controlsd, then kill joystickd
+    # We publish carControl directly with enabled=True
     params.put_bool("JoystickDebugMode", True)
+    import subprocess, time as _t
+    _t.sleep(2)  # let manager swap controlsd → joystickd
+    subprocess.run(["pkill", "-f", "joystickd"], capture_output=True)
+    _t.sleep(0.5)
+    print("Killed joystickd — we own carControl now")
 
-    # Keep JoystickDebugMode alive
-    def keep_joystick_mode():
-        while True:
-            params.put_bool("JoystickDebugMode", True)
-            time.sleep(2)
-    threading.Thread(target=keep_joystick_mode, daemon=True).start()
+    # Start sending commands IMMEDIATELY to prevent selfdrived from disengaging
+    motor = MotorController()
+    publisher = CommandPublisher(motor)
+    print("Command publisher started (100Hz keepalive)")
 
     print("SCP-173 online. Loading YuNet...")
     detector = YuNetDetector(YUNET_MODEL, input_size=(320, 240), conf_threshold=0.3)
-    motor = MotorController()
-    publisher = CommandPublisher(motor)
     fsm = SCP173StateMachine()
 
     print("Connecting to road camera...")

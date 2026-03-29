@@ -1,11 +1,8 @@
-"""Motor controller — publishes testJoystick messages consumed by joystickd.
+"""Motor controller — publishes carControl directly, bypassing joystickd.
 
-joystickd is already running as part of openpilot on the body and publishes
-carControl. We feed it via testJoystick to avoid publisher conflicts.
-
-testJoystick.axes = [accel, steer]
-  accel: -1.0 = full forward,  +1.0 = full backward  (joystickd convention)
-  steer: -1.0 = full left,     +1.0 = full right
+Publishes carControl with enabled=True, longActive=True, latActive=True
+so the body carcontroller always receives commands regardless of
+selfdriveState engagement status.
 """
 
 import numpy as np
@@ -14,17 +11,25 @@ from cereal import messaging
 
 class MotorController:
     def __init__(self):
-        self._pm = messaging.PubMaster(["testJoystick"])
+        self._pm = messaging.PubMaster(["carControl"])
 
     def send(self, accel: float, steer: float) -> None:
-        # joystickd axes[0]: -1 = forward, so negate our accel
+        # Body v2 carcontroller expects:
+        #   actuators.accel: divided by 4, multiplied by MAX_VELOCITY → speed target
+        #   actuators.torque: multiplied by MAX_TURN_RATE → turn rate target
+        # Negative accel = forward for the body
         joystick_accel = float(np.clip(-accel, -1.0, 1.0))
-        joystick_steer = float(np.clip(steer,  -1.0, 1.0))
+        joystick_steer = float(np.clip(steer, -1.0, 1.0))
 
-        msg = messaging.new_message("testJoystick")
+        msg = messaging.new_message("carControl")
         msg.valid = True
-        msg.testJoystick.axes = [joystick_accel, joystick_steer]
-        self._pm.send("testJoystick", msg)
+        cc = msg.carControl
+        cc.enabled = True
+        cc.longActive = True
+        cc.latActive = True
+        cc.actuators.accel = 4.0 * joystick_accel
+        cc.actuators.torque = joystick_steer
+        self._pm.send("carControl", msg)
 
     def stop(self) -> None:
         self.send(0.0, 0.0)
