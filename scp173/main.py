@@ -530,6 +530,13 @@ def main():
 
     finally:
         publisher.stop()
+        # Save occupancy grid for post-demo analysis
+        try:
+            np.save("/data/openpilot/scp173/occupancy_grid.npy", nav_grid.grid)
+            log.info("Occupancy grid saved (%d obstacles, %d explored)",
+                     nav_grid.get_obstacle_count(), nav_grid.get_explored_count())
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
