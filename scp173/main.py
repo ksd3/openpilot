@@ -25,6 +25,7 @@ from msgq.visionipc import VisionIpcClient, VisionStreamType
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.params import Params
 
+from cereal import messaging as cereal_messaging
 from scp173.perception.detector_yunet import YuNetDetector
 from scp173.behavior.state_machine import SCP173StateMachine, State
 from scp173.control.motor_controller import MotorController
@@ -119,8 +120,9 @@ def main():
     params.put_bool("JoystickDebugMode", True)
     time.sleep(2)  # let manager swap controlsd → joystickd
     subprocess.run(["pkill", "-f", "joystickd"], capture_output=True)
+    subprocess.run(["pkill", "-f", "soundd"], capture_output=True)
     time.sleep(0.5)
-    print("Killed joystickd — we own carControl now")
+    print("Killed joystickd + soundd — we own carControl and audio")
 
     # Start sending commands IMMEDIATELY to prevent selfdrived from disengaging
     motor = MotorController()
@@ -137,6 +139,7 @@ def main():
 
     print("Connecting to road camera...")
     road_cam = connect_camera(VisionStreamType.VISION_STREAM_ROAD)
+    sm = cereal_messaging.SubMaster(['carState', 'livePose'])
     print("Camera connected. Beginning containment breach...")
 
     # Smoothing
@@ -155,6 +158,17 @@ def main():
     fps = 0.0
     tick = 0
     prev_state = State.IDLE
+    last_commanding_time = 0.0
+    last_actually_moving_time = 0.0
+    backup_until = 0.0
+    turn_until = 0.0
+    turn_direction = 1.0
+
+    # World-space position tracking
+    pos_x = 0.0   # meters forward from start
+    pos_y = 0.0   # meters right from start
+    heading = 0.0  # radians, 0 = initial forward
+    last_pose_time = time.monotonic()
 
     try:
         while True:
@@ -188,19 +202,26 @@ def main():
             else:
                 target_distance = 0.8
 
-            # Only steer when face is visible NOW — go straight when lost
+            # Steer toward face when visible, briefly chase last known bearing, then go straight
             if bearing is not None:
                 target_bearing = bearing
+            elif frames_since_face < 5:
+                target_bearing = last_known_bearing  # chase briefly after face disappears
             else:
-                target_bearing = 0.0  # go straight, don't chase stale bearing
+                target_bearing = 0.0  # go straight after a few frames
 
             # State machine
             raw_accel, raw_steer = fsm.update(
                 person_detected, being_watched, target_bearing, target_distance
             )
 
-            # Sound triggers on state transitions
+            # State transition handling
             cur_state = fsm.state
+            if cur_state == State.STALKING and prev_state == State.FROZEN:
+                # Reset smoothing so robot heads toward last known bearing cleanly
+                smooth_bearing = last_known_bearing * 0.8  # start aimed at person
+                smooth_accel = 0.0
+
             if sound:
                 if cur_state != prev_state:
                     if cur_state == State.STALKING and prev_state == State.FROZEN:
@@ -226,6 +247,58 @@ def main():
             final_accel = min(smooth_accel, MAX_ACCEL)
             final_steer = max(-MAX_STEER_CMD, min(MAX_STEER_CMD, smooth_bearing))
 
+            # Stuck detection: if commanding forward but not moving, back up
+            sm.update(0)
+            speed = abs(sm['carState'].vEgo)
+            now = time.monotonic()
+
+            # Update world-space position from livePose
+            sm.update(0)
+            pose = sm['livePose']
+            dt = now - last_pose_time
+            last_pose_time = now
+
+            # velocityDevice: x=forward, y=right, z=down (device frame)
+            vx = pose.velocityDevice.x
+            vy = pose.velocityDevice.y
+            world_speed = np.sqrt(vx**2 + vy**2)
+
+            # Angular velocity for heading
+            yaw_rate = pose.angularVelocityDevice.z
+            heading += yaw_rate * dt
+
+            # Integrate position in world frame
+            pos_x += (vx * np.cos(heading) - vy * np.sin(heading)) * dt
+            pos_y += (vx * np.sin(heading) + vy * np.cos(heading)) * dt
+
+            # Track commanding vs actual movement
+            if final_accel > 0.05:
+                last_commanding_time = now
+            if world_speed > 0.05:
+                last_actually_moving_time = now
+
+            recently_commanding = (now - last_commanding_time) < 2.0
+            not_actually_moving = (now - last_actually_moving_time) > 1.5
+
+            if now < backup_until:
+                # Phase 1: back up
+                final_accel = -0.3
+                final_steer = 0.0
+            elif now < turn_until:
+                # Phase 2: turn away from the wall
+                final_accel = 0.0
+                final_steer = 0.15 * turn_direction
+                # If we spot a face during turn, stop turning
+                if bearing is not None:
+                    turn_until = 0.0
+            elif recently_commanding and not_actually_moving and now > (backup_until + 1.0):
+                # Stuck! Start backup sequence
+                # Turn opposite to where we were steering
+                turn_direction = -1.0 if smooth_bearing > 0 else 1.0
+                backup_until = now + 0.8
+                turn_until = now + 2.5  # back up 0.8s then turn ~1.7s
+                log.info("STUCK — backup + turn (dir=%.0f)", turn_direction)
+
             publisher.update(final_accel, final_steer)
 
             elapsed = time.monotonic() - t0
@@ -233,10 +306,11 @@ def main():
 
             log.info(
                 "state=%s faces=%d watched=%s bearing=%.2f dist=%.3f "
-                "accel=%.2f steer=%+.2f fps=%.0f %dms",
+                "accel=%.2f steer=%+.2f pos=(%.2f,%.2f) spd=%.2f fps=%.0f %dms",
                 fsm.state.name, len(faces), being_watched,
                 target_bearing, target_distance,
-                final_accel, final_steer, fps, elapsed * 1000,
+                final_accel, final_steer, pos_x, pos_y, world_speed,
+                fps, elapsed * 1000,
             )
 
             if tick % 10 == 0:
