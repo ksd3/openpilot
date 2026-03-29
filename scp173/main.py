@@ -42,6 +42,7 @@ SOUND_STARTUP = "/data/openpilot/scp173/sounds/bewareilive.wav"
 SOUND_CHASE = "/data/openpilot/scp173/sounds/aaaaaaa.wav"
 SOUND_RUN = "/data/openpilot/scp173/sounds/run_coward.wav"
 SOUND_STRIKE = "/data/openpilot/scp173/sounds/necksnap.wav"
+SOUND_IDLE = "/data/openpilot/scp173/sounds/concretegrind.wav"
 
 FACE_STALKING = "/data/openpilot/scp173/assets/face_stalking.jpg"
 FACE_FROZEN = "/data/openpilot/scp173/assets/face_frozen.jpg"
@@ -400,9 +401,11 @@ def main():
                         ], env={**os.environ, "PYTHONPATH": "/data/openpilot"})
                 elif cur_state == State.IDLE:
                     screen.set_face(FACE_STALKING)
-                    if sound: sound.stop()
+                    if sound: sound.play(SOUND_IDLE)
             elif cur_state == State.STALKING and sound and not sound.is_playing:
                 sound.play(SOUND_CHASE)
+            elif cur_state == State.IDLE and sound and not sound.is_playing:
+                sound.play(SOUND_IDLE)
             prev_state = cur_state
 
             # Smoothing + rate limiting
