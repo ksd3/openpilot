@@ -280,3 +280,28 @@ def _get_frame_index(animation: Animation, elapsed: float, gap_first: bool = Fal
     return num_frames - 2 - backward_index
   else:
     return 0
+
+# ── SCP-173 Override ──────────────────────────────────────────────────────────
+
+_SCP_EYE_L = [
+        (1, 1), (1, 2), (1, 3), (1, 4),
+(2, 0), (2, 1), (2, 2), (2, 3), (2, 4), (2, 5),
+(3, 0), (3, 1), (3, 2), (3, 3), (3, 4), (3, 5),
+(4, 0), (4, 1), (4, 2), (4, 3), (4, 4), (4, 5),
+        (5, 1), (5, 2), (5, 3), (5, 4),
+]
+_SCP_EYE_R = [(r, 15 - c) for r, c in _SCP_EYE_L]
+_SCP_BROW_L = [(0, 0), (0, 1), (1, 2)]
+_SCP_BROW_R = [(r, 15 - c) for r, c in _SCP_BROW_L]
+_SCP_FACE = _SCP_EYE_L + _SCP_EYE_R + _SCP_BROW_L + _SCP_BROW_R
+_SCP_NARROW_L = [(3, 0), (3, 1), (3, 2), (3, 3), (3, 4), (3, 5), (4, 0), (4, 1), (4, 2), (4, 3), (4, 4), (4, 5)]
+_SCP_NARROW_R = [(r, 15 - c) for r, c in _SCP_NARROW_L]
+_SCP_FACE_NARROW = _SCP_NARROW_L + _SCP_NARROW_R + _SCP_BROW_L + _SCP_BROW_R
+_SCP_CLOSED_L = [(3, 1), (3, 2), (3, 3), (3, 4)]
+_SCP_CLOSED_R = [(r, 15 - c) for r, c in _SCP_CLOSED_L]
+_SCP_FACE_CLOSED = _SCP_CLOSED_L + _SCP_CLOSED_R
+
+NORMAL = Animation(frames=[_SCP_FACE], mode=AnimationMode.REPEAT_FORWARD, frame_duration=1.0, repeat_interval=10.0)
+ASLEEP = Animation(frames=[_SCP_FACE_CLOSED, _SCP_FACE_NARROW, _SCP_FACE, _SCP_FACE_NARROW, _SCP_FACE_CLOSED], mode=AnimationMode.REPEAT_FORWARD, frame_duration=0.4, repeat_interval=5.0)
+SLEEPY = Animation(frames=[_SCP_FACE_CLOSED], mode=AnimationMode.REPEAT_FORWARD, frame_duration=1.0, repeat_interval=5.0)
+INQUISITIVE = Animation(frames=[_SCP_FACE_NARROW, _SCP_FACE, _SCP_FACE_NARROW], mode=AnimationMode.REPEAT_FORWARD_BACKWARD, frame_duration=0.5, repeat_interval=3.0)

@@ -48,7 +48,7 @@ class BodyLayout(Widget):
 
   def draw_dot_grid(self, rect: rl.Rectangle, dots: list[tuple[int, int]], color: rl.Color | None = None):
     if color is None:
-      color = rl.WHITE
+      color = rl.Color(255, 0, 0, 255)
 
     spacing = (rect.height) / (GRID_ROWS)
 
